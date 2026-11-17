@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cafetería principal 3D · Gemelo digital de ruido</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Orbitron:wght@500;700&family=Rajdhani:wght@400;500;600&display=swap" rel="stylesheet">
+
+<!-- Three.js como módulo ES desde CDN (versión fija) -->
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js" defer></script>
+
+<style>
+:root {
+  --fondo: #05070d; --azul: #1e90ff; --cian: #00e5ff; --texto: #dbeaff; --tenue: #8fb0d9;
+  --verde: #20e3a2; --amarillo: #ffd23f; --rojo: #ff3b5c;
+  --panel: rgba(8, 18, 38, .62); --borde: rgba(30, 144, 255, .35);
+  --f-titulo: "Orbitron", "Rajdhani", sans-serif;
+  --f-texto: "Rajdhani", system-ui, sans-serif;
+  --f-cifra: "JetBrains Mono", ui-monospace, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background-color: var(--fondo);
+  background-image:
+    linear-gradient(rgba(30, 144, 255, .055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(30, 144, 255, .055) 1px, transparent 1px);
+  background-size: 40px 40px;
+  color: var(--texto); font-family: var(--f-texto); font-size: 15px; line-height: 1.35;
+}
+.app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; padding: 10px; gap: 10px; }
+
+/* --- Barra superior --- */
+.barra { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 8px 14px; border: 1px solid var(--borde); background: var(--panel); box-shadow: 0 0 18px rgba(30, 144, 255, .12); }
+.barra h1 { margin: 0; font: 700 15px var(--f-titulo); letter-spacing: .14em; color: #fff; text-shadow: 0 0 10px rgba(0, 229, 255, .7); }
+.barra p { margin: 0; color: var(--tenue); font-size: 13px; letter-spacing: .06em; }
+.barra .hueco { flex: 1; }
+.barra a { color: var(--texto); font: 600 13px var(--f-texto); letter-spacing: .08em; text-transform: uppercase; text-decoration: none; border: 1px solid var(--borde); padding: 4px 10px; }
+.barra a:hover { border-color: var(--cian); color: #fff; }
+.insignia { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; font: 600 12px var(--f-cifra); letter-spacing: .08em; padding: 4px 9px; border: 1px solid var(--borde); }
+.insignia::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--tenue); }
+.insignia[data-modo="vivo"] { border-color: var(--verde); }
+.insignia[data-modo="vivo"]::before { background: var(--verde); box-shadow: 0 0 8px var(--verde); }
+.insignia[data-modo="demo"] { border-color: var(--amarillo); background: rgba(255, 210, 63, .1); }
+.insignia[data-modo="demo"]::before { background: var(--amarillo); box-shadow: 0 0 8px var(--amarillo); }
+
+/* --- Cuerpo: visor + columna de paneles --- */
+.rejilla { flex: 1; min-height: 0; display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr) 320px; }
+.visor { position: relative; min-height: 320px; overflow: hidden; border: 1px solid var(--borde); box-shadow: 0 0 24px rgba(30, 144, 255, .18); background: radial-gradient(ellipse at 50% 60%, rgba(30, 144, 255, .10), transparent 70%); }
+.visor canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+#etiquetas { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.etq { position: absolute; left: 0; top: 0; white-space: nowrap; will-change: transform; }
+.etq-sensor { padding: 2px 7px; font: 600 11px var(--f-cifra); color: #fff; background: rgba(5, 10, 22, .88); border: 1px solid var(--c, var(--tenue)); box-shadow: 0 0 8px var(--c, transparent); }
+.etq-nota { font: 500 11px var(--f-texto); letter-spacing: .1em; text-transform: uppercase; color: var(--texto); padding: 1px 6px; border-left: 2px solid var(--cian); background: rgba(5, 10, 22, .6); }
+.sin-notas .etq-nota { display: none !important; }
+.vistas { position: absolute; left: 10px; bottom: 10px; display: flex; gap: 6px; flex-wrap: wrap; max-width: calc(100% - 20px); }
+.vistas button { padding: 4px 10px; font: 600 12px var(--f-texto); letter-spacing: .08em; text-transform: uppercase; color: #fff; background: rgba(5, 10, 22, .85); border: 1px solid var(--borde); cursor: pointer; }
+.vistas button:hover { border-color: var(--cian); }
+.vistas button[aria-pressed="true"] { border-color: var(--cian); background: rgba(0, 229, 255, .16); }
+.vistas button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.aviso-demo { position: absolute; right: 10px; top: 10px; padding: 4px 12px; font: 700 11px var(--f-titulo); letter-spacing: .2em; color: #1a1400; background: var(--amarillo); box-shadow: 0 0 18px rgba(255, 210, 63, .55); }
+.aviso-demo[hidden] { display: none; }
+.rotulo-visor { position: absolute; left: 10px; top: 10px; padding: 3px 9px; font: 500 11px var(--f-titulo); letter-spacing: .18em; color: #fff; background: rgba(5, 10, 22, .75); border: 1px solid var(--cian); text-shadow: 0 0 8px var(--cian); }
+#error { position: absolute; inset: 0; display: grid; place-items: center; padding: 20px; text-align: center; color: var(--tenue); }
+#error[hidden] { display: none; }
+
+.col { display: flex; flex-direction: column; gap: 10px; min-height: 0; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--borde) transparent; }
+.panel { position: relative; padding: 12px 14px; background: var(--panel); border: 1px solid var(--borde); box-shadow: 0 0 18px rgba(30, 144, 255, .12), inset 0 0 28px rgba(30, 144, 255, .05); }
+.panel::before, .panel::after { content: ""; position: absolute; width: 12px; height: 12px; pointer-events: none; border: 2px solid var(--cian); filter: drop-shadow(0 0 4px var(--cian)); }
+.panel::before { top: -1px; left: -1px; border-right: 0; border-bottom: 0; }
+.panel::after { bottom: -1px; right: -1px; border-left: 0; border-top: 0; }
+.panel h2 { margin: 0 0 10px; font: 500 12px var(--f-titulo); letter-spacing: .16em; text-transform: uppercase; color: #fff; text-shadow: 0 0 8px rgba(0, 229, 255, .6); }
+.panel p { margin: 0 0 6px; color: var(--tenue); font-size: 13.5px; }
+
+/* Tarjetas de sensores */
+.sensores { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.sensores button { width: 100%; display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; align-items: baseline; text-align: left; padding: 8px 10px; cursor: pointer; color: var(--texto); background: rgba(5, 10, 22, .5); border: 1px solid var(--borde); border-left: 3px solid var(--c, var(--tenue)); font-family: var(--f-texto); }
+.sensores button:hover { border-color: var(--cian); border-left-color: var(--c, var(--tenue)); }
+.sensores .nombre { font-size: 14.5px; font-weight: 600; color: #fff; }
+.sensores .valor { font: 600 20px var(--f-cifra); color: #fff; }
+.sensores .valor small { font: 400 11px var(--f-cifra); color: var(--tenue); }
+.sensores .estado { grid-column: 1 / -1; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; letter-spacing: .1em; color: var(--tenue); }
+.sensores .estado::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--c, var(--tenue)); box-shadow: 0 0 6px var(--c, transparent); }
+
+.ficha { margin: 0; display: grid; gap: 5px; }
+.ficha div { display: flex; justify-content: space-between; gap: 10px; border-bottom: 1px dashed rgba(30, 144, 255, .18); padding-bottom: 4px; }
+.ficha dt { color: var(--tenue); font-size: 13.5px; }
+.ficha dd { margin: 0; font: 600 13px var(--f-cifra); color: #fff; text-align: right; }
+
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+@media (max-width: 900px) {
+  html, body { height: auto; }
+  .app { height: auto; min-height: 100vh; padding: 6px; gap: 6px; }
+  .rejilla { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .visor { height: 62vh; }
+  .col { overflow: visible; }
+}
+</style>
+</head>
+
+<body>
+<div class="app">
+  <header class="barra">
+    <div>
+      <h1>CAFETERÍA PRINCIPAL · MODELO 3D</h1>
+      <p>Gemelo digital de ruido · Universidad del Magdalena</p>
+    </div>
+    <span class="hueco"></span>
+    <span class="insignia" id="insignia" data-modo="conectando" role="status">CONECTANDO…</span>
+    <a href="mar-caribe-3d.html">Mar Caribe 3D</a>
+    <a href="index3d.html">← Mapa del campus</a>
+  </header>
+
+  <main class="rejilla">
+    <section class="visor" id="visor" aria-label="Modelo 3D de la cafetería principal">
+      <canvas id="lienzo"></canvas>
+      <div id="etiquetas"></div>
+      <span class="rotulo-visor">GEMELO DIGITAL</span>
+      <div class="aviso-demo" id="aviso-demo" hidden>DATOS SIMULADOS</div>
+      <div class="vistas" id="vistas"></div>
+      <div id="error" hidden>No se pudo iniciar el visor 3D (¿sin acceso al CDN o sin WebGL?).</div>
+    </section>
+
+    <aside class="col">
+      <section class="panel">
+        <h2>Sensores en la cafetería</h2>
+        <ul class="sensores" id="sensores"></ul>
+      </section>
+      <section class="panel">
+        <h2>Ficha del modelo</h2>
+        <dl class="ficha" id="ficha"></dl>
+        <p style="margin-top:8px">Medidas estimadas a partir de fotografías; ajústalas en <b>CONFIG.edificio</b>.</p>
+      </section>
+      <section class="panel">
+        <h2>Controles</h2>
+        <p>Arrastrar: orbitar · Rueda o pellizco: acercar · Clic derecho o dos dedos: desplazar.</p>
+      </section>
+    </aside>
+  </main>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ==================================================================
+   CONFIGURACIÓN
+   ================================================================== */
+const CONFIG = {
+  // Medidas en metros (ESTIMADAS a ojo desde las fotos: corrígelas midiendo en sitio).
+  edificio: {
+    largo: 24,              // pabellón principal, entre ejes de columnas
+    ancho: 18,
+    alero: 1.6,             // vuelo de la cubierta más allá de las columnas
+    alturaAlero: 3.4,
+    alturaCumbrera: 6.4,
+    columna: 0.5,           // lado de la columna cuadrada
+    secundario: { largo: 12, ancho: 12, alturaAlero: 3.2, alturaCumbrera: 5.6, separacion: 2.5, dz: 1.5 },
+  },
+
+  // Sensores sobre el modelo. "zona" debe coincidir con el tópico campus/ruido/<zona>.
+  // El primero usa la zona "cafeteria" del nodo real. base/actividad/almuerzo solo se usan en la demo.
+  sensores: [
+    { zona: 'cafeteria',         nombre: 'Comedor',           pos: [0, 2.6, 3],     base: 41, actividad: 15, almuerzo: 13 },
+    { zona: 'cafeteria_barra',   nombre: 'Barra de servicio', pos: [0, 2.4, -3.2],  base: 43, actividad: 14, almuerzo: 12 },
+    { zona: 'cafeteria_terraza', nombre: 'Terraza',           pos: [-18, 1.6, 19],  base: 42, actividad: 12, almuerzo: 9 },
+  ],
+
+  mqtt: {
+    url: 'ws://' + (location.hostname || 'raspberrypi.local') + ':9001',   // sin credenciales en el navegador
+    topico: 'campus/ruido/+',
+    reconexionMs: 10000,
+    esperaDemoMs: 6000,   // sin broker durante este tiempo => datos simulados
+  },
+  niveles: { verde: 55, rojo: 65 },     // <55 verde · 55–65 amarillo · >65 rojo
+  pulso: { dbLento: 40, sLento: 2.6, dbRapido: 80, sRapido: 0.6 },
+  utcOffsetHoras: -5,
+  demo: { periodoMs: 2000 },
+  ui: { fps: 30, giroAutomatico: true, velocidadGiro: 0.5 },
+  colores: { azul: '#1e90ff', cian: '#00e5ff', verde: '#20e3a2', amarillo: '#ffd23f', rojo: '#ff3b5c' },
+
+  // Vistas predefinidas: posición de la cámara y punto al que mira.
+  vistas: {
+    'Aérea':    { pos: [34, 30, 50],  mira: [-8, 2, 3] },
+    'Frente':   { pos: [-4, 7, 48],   mira: [-8, 3, 0] },
+    'Interior': { pos: [9.5, 2.1, 8], mira: [-3, 1.7, -3] },
+    'Planta':   { pos: [-8, 95, 4.01], mira: [-8, 0, 4] },
+  },
+};
+
+/* ==================================================================
+   UTILIDADES
+   ================================================================== */
+const $ = id => document.getElementById(id);
+const SIN_MOVIMIENTO = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const limitar = (v, a, b) => Math.min(b, Math.max(a, v));
+function clasificar(db) {
+  if (db > CONFIG.niveles.rojo) return { color: CONFIG.colores.rojo, texto: 'NIVEL ALTO' };
+  if (db >= CONFIG.niveles.verde) return { color: CONFIG.colores.amarillo, texto: 'NIVEL MODERADO' };
+  return { color: CONFIG.colores.verde, texto: 'NIVEL BAJO' };
+}
+
+/* ==================================================================
+   ESCENA
+   ================================================================== */
+const visor = $('visor'), lienzo = $('lienzo');
+const escena = new THREE.Scene();
+let renderizador;
+try {
+  renderizador = new THREE.WebGLRenderer({ canvas: lienzo, antialias: true, alpha: true });
+} catch (e) { $('error').hidden = false; throw e; }
+renderizador.setPixelRatio(Math.min(devicePixelRatio, 1.5));     // tope para no cargar la GPU
+const camara = new THREE.PerspectiveCamera(42, 1, 1, 900);
+const controles = new OrbitControls(camara, lienzo);
+controles.enableDamping = !SIN_MOVIMIENTO;
+controles.maxPolarAngle = Math.PI / 2 - 0.02;                    // no pasar por debajo del suelo
+controles.minDistance = 5; controles.maxDistance = 200;
+controles.autoRotate = CONFIG.ui.giroAutomatico && !SIN_MOVIMIENTO;
+controles.autoRotateSpeed = CONFIG.ui.velocidadGiro;
+
+// Materiales: volúmenes azul oscuro sombreados + aristas brillantes.
+// El modo "Rayos X" vuelve las caras translúcidas para ver el interior del atrio.
+const col = CONFIG.colores;
+const matCara = new THREE.MeshLambertMaterial({ color: '#1a6fd1', emissive: '#06204a', side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
+escena.add(new THREE.AmbientLight('#ffffff', 0.9));
+const sol = new THREE.DirectionalLight('#ffffff', 2.2);
+sol.position.set(60, 90, 40);
+escena.add(sol);
+function rayosX(activo) {
+  matCara.transparent = activo;
+  matCara.opacity = activo ? 0.14 : 1;
+  matCara.blending = activo ? THREE.AdditiveBlending : THREE.NormalBlending;
+  matCara.depthWrite = !activo;
+  matCara.needsUpdate = true;
+}
+const matCaraFuerte = new THREE.MeshBasicMaterial({ color: col.cian, transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+const matLinea = new THREE.LineBasicMaterial({ color: col.cian, transparent: true, opacity: 0.9 });
+const matLineaTenue = new THREE.LineBasicMaterial({ color: col.azul, transparent: true, opacity: 0.45 });
+
+const edificio = new THREE.Group();
+escena.add(edificio);
+// Las líneas sueltas y los paneles planos se acumulan y se dibujan en una sola llamada cada uno.
+const segFuertes = [], segTenues = [], cuads = [];
+const seg = (a, b, tenue) => (tenue ? segTenues : segFuertes).push(...a, ...b);
+
+// Sólido = malla translúcida + aristas.
+function solido(geo, mat = matCara, lineas = matLinea) {
+  edificio.add(new THREE.Mesh(geo, mat));
+  edificio.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo, 25), lineas));
+}
+function caja(x0, x1, y0, y1, z0, z1, mat, lineas) {
+  const geo = new THREE.BoxGeometry(x1 - x0, y1 - y0, z1 - z0);
+  geo.translate((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
+  solido(geo, mat, lineas);
+}
+// Solo las 12 aristas de una caja (para detalles pequeños).
+function cajaAlambre(x0, x1, y0, y1, z0, z1, tenue = true) {
+  for (const y of [y0, y1]) { seg([x0, y, z0], [x1, y, z0], tenue); seg([x1, y, z0], [x1, y, z1], tenue); seg([x1, y, z1], [x0, y, z1], tenue); seg([x0, y, z1], [x0, y, z0], tenue); }
+  for (const [x, z] of [[x0, z0], [x1, z0], [x1, z1], [x0, z1]]) seg([x, y0, z], [x, y1, z], tenue);
+}
+// Rectángulo horizontal (marca de entrepiso).
+function anillo(x0, x1, z0, z1, y, tenue = true) {
+  seg([x0, y, z0], [x1, y, z0], tenue); seg([x1, y, z0], [x1, y, z1], tenue); seg([x1, y, z1], [x0, y, z1], tenue); seg([x0, y, z1], [x0, y, z0], tenue);
+}
+// Panel plano de cuatro vértices.
+const cuad = (a, b, c, d) => cuads.push(...a, ...b, ...c, ...a, ...c, ...d);
+// Prisma vertical a partir de una planta (Shape con coordenadas x, -z).
+function prisma(forma, y0, y1) {
+  const geo = new THREE.ExtrudeGeometry(forma, { depth: y1 - y0, bevelEnabled: false, curveSegments: 18 });
+  geo.rotateX(-Math.PI / 2);
+  geo.translate(0, y0, 0);
+  solido(geo);
+}
+
+/* ==================================================================
+   MODELO DE LA CAFETERÍA PRINCIPAL
+   Interpretación de las fotos:
+   - Pabellón principal abierto, con cubierta metálica a cuatro aguas de
+     alero ancho, sobre columnas cuadradas de concreto.
+   - Al fondo, el bloque cerrado de cocina con la barra de servicio.
+   - En un costado, muro bajo con tres arcos de ladrillo.
+   - Un segundo pabellón más pequeño unido por un paso cubierto.
+   - Terraza exterior con mesas redondas bajo los árboles grandes.
+   Ejes: X = largo del pabellón, Z = fondo (la terraza queda hacia +Z), Y = altura.
+   ================================================================== */
+const E = CONFIG.edificio;
+const A = E.largo / 2, B = E.ancho / 2;                  // semiejes del pabellón principal
+const nota = [];                                         // anotaciones del modelo
+// La cubierta es semitransparente para que se vean las mesas y los sensores de adentro.
+const matTecho = new THREE.MeshLambertMaterial({ color: '#45c8ff', emissive: '#0a3a70', transparent: true, opacity: 0.72, depthWrite: false, side: THREE.DoubleSide });
+
+// Cubierta a cuatro aguas: (cx, cz) centro, a/b semiejes del alero, ye altura del alero, yr de la cumbrera.
+function techoCuatroAguas(cx, cz, a, b, ye, yr) {
+  const r = Math.max(a - b, 0);                          // media longitud de la cumbrera
+  const P = [[cx - a, ye, cz - b], [cx + a, ye, cz - b], [cx + a, ye, cz + b], [cx - a, ye, cz + b]];
+  const R0 = [cx - r, yr, cz], R1 = [cx + r, yr, cz];
+  const caras = [P[3], P[2], R1, P[3], R1, R0, P[1], P[0], R0, P[1], R0, R1, P[2], P[1], R1, P[0], P[3], R0];
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(caras.flat(), 3));
+  geo.computeVertexNormals();
+  solido(geo, matTecho);
+  // correas radiales, como se ven desde abajo en las fotos
+  for (let x = cx - a; x <= cx + a + 0.01; x += 1.5) {
+    const xr = limitar(x, cx - r, cx + r);
+    seg([x, ye + 0.04, cz + b], [xr, yr + 0.04, cz], true); seg([x, ye + 0.04, cz - b], [xr, yr + 0.04, cz], true);
+  }
+  for (let z = cz - b + 1.5; z < cz + b; z += 1.5) { seg([cx + a, ye + 0.04, z], R1, true); seg([cx - a, ye + 0.04, z], R0, true); }
+  // remate elevado sobre la cumbrera
+  caja(cx - r - 0.6, cx + r + 0.6, yr - 0.1, yr + 0.45, cz - 0.7, cz + 0.7);
+}
+
+// Pabellón: piso, columnas perimetrales, viga de borde y cubierta.
+function pabellon(cx, cz, a, b, ye, yr, paso) {
+  const c = E.columna / 2;
+  caja(cx - a - 0.6, cx + a + 0.6, -0.05, 0.12, cz - b - 0.6, cz + b + 0.6, matCara, matLineaTenue);
+  const nx = Math.round(2 * a / paso), nz = Math.round(2 * b / paso);
+  for (let i = 0; i <= nx; i++) for (let j = 0; j <= nz; j++) {
+    if (i > 0 && i < nx && j > 0 && j < nz) continue;    // solo el perímetro
+    const x = cx - a + 2 * a * i / nx, z = cz - b + 2 * b * j / nz;
+    caja(x - c, x + c, 0.12, ye, z - c, z + c);
+  }
+  anillo(cx - a, cx + a, cz - b, cz + b, ye - 0.35, false);
+  techoCuatroAguas(cx, cz, a + E.alero, b + E.alero, ye, yr);
+}
+
+function construirEdificio() {
+  // --- Pabellón principal ---
+  pabellon(0, 0, A, B, E.alturaAlero, E.alturaCumbrera, 6);
+  nota.push({ texto: 'Pabellón principal', pos: [0, E.alturaCumbrera + 1.6, 0] });
+
+  // --- Cocina y barra de servicio (fondo del pabellón) ---
+  const kx = A * 0.6, kz0 = -B + 0.2, kz1 = -B + 4.8, hk = E.alturaAlero - 0.5;
+  caja(-kx, kx, 0.12, hk, kz0, kz1);
+  const zf = kz1 + 0.06;
+  cuad([-kx + 1.2, 1.0, zf], [kx - 1.2, 1.0, zf], [kx - 1.2, 2.05, zf], [-kx + 1.2, 2.05, zf]);     // vano de atención
+  cuad([-kx + 1.2, 2.25, zf], [kx - 1.2, 2.25, zf], [kx - 1.2, 2.7, zf], [-kx + 1.2, 2.7, zf]);      // franja del aviso
+  seg([-kx + 1.2, 1.0, zf + 0.5], [kx - 1.2, 1.0, zf + 0.5], false);                                 // mesón
+  nota.push({ texto: 'Barra de servicio', pos: [0, hk + 0.4, kz1] });
+
+  // --- Muro con tres arcos de ladrillo (costado +X) ---
+  const mz0 = -B + 1, mz1 = 2, hm = 3;
+  caja(A - 0.15, A + 0.15, 0.12, hm, mz0, mz1);
+  for (let i = 0; i < 3; i++) {
+    const zc = mz0 + (mz1 - mz0) * (i + 0.5) / 3, r = 1.15, ya = 1.45;
+    for (const x of [A - 0.22, A + 0.22]) {
+      seg([x, 0.3, zc - r], [x, ya, zc - r], false); seg([x, 0.3, zc + r], [x, ya, zc + r], false); seg([x, 0.3, zc - r], [x, 0.3, zc + r], false);
+      for (let k = 0; k < 14; k++) {
+        const a0 = Math.PI * k / 14, a1 = Math.PI * (k + 1) / 14;
+        seg([x, ya + Math.sin(a0) * r, zc - Math.cos(a0) * r], [x, ya + Math.sin(a1) * r, zc - Math.cos(a1) * r], false);
+      }
+    }
+  }
+  nota.push({ texto: 'Muro de arcos', pos: [A + 0.3, hm + 0.6, (mz0 + mz1) / 2] });
+
+  // --- Mesas con bancas dentro del pabellón ---
+  for (let x = -A + 1.6; x + 1.8 < A - 1.2; x += 3.2)
+    for (let z = -B + 6.6; z + 0.8 < B - 0.8; z += 2.6) {
+      cajaAlambre(x, x + 1.8, 0.7, 0.76, z, z + 0.8);
+      seg([x, 0.45, z - 0.35], [x + 1.8, 0.45, z - 0.35], true); seg([x, 0.45, z + 1.15], [x + 1.8, 0.45, z + 1.15], true);
+    }
+
+  // --- Pabellón secundario y paso cubierto ---
+  const s = E.secundario, sx = -(A + E.alero + s.largo / 2 + s.separacion), sz = s.dz;
+  pabellon(sx, sz, s.largo / 2, s.ancho / 2, s.alturaAlero, s.alturaCumbrera, 6);
+  caja(sx + s.largo / 2, -A, s.alturaAlero - 0.45, s.alturaAlero - 0.3, sz - 2.5, sz + 2.5, matTecho, matLinea);
+  for (let x = sx - s.largo / 2 + 1.6; x + 1.8 < sx + s.largo / 2 - 1; x += 3.2)
+    for (let z = sz - s.ancho / 2 + 1.5; z + 0.8 < sz + s.ancho / 2 - 0.8; z += 2.6) cajaAlambre(x, x + 1.8, 0.7, 0.76, z, z + 0.8);
+  nota.push({ texto: 'Pabellón secundario', pos: [sx, s.alturaCumbrera + 1.4, sz] });
+}
+
+// Entorno: rejilla, terraza con mesas redondas y árboles.
+function construirEntorno() {
+  const rejilla = new THREE.GridHelper(160, 80, col.azul, col.azul);
+  rejilla.material.transparent = true; rejilla.material.opacity = 0.16;
+  rejilla.position.y = -0.08;
+  escena.add(rejilla);
+
+  // terraza al frente (+Z)
+  const tx0 = -A - 22, tx1 = A + 4, tz0 = B + 3, tz1 = B + 17, y = 0.03;
+  anillo(tx0, tx1, tz0, tz1, y);
+  let n = 0;
+  for (let x = tx0 + 3; x < A - 6; x += 4.2)
+    for (let z = tz0 + 2.5; z < tz1 - 1.5; z += 4.2) {
+      const dx = ((n * 37) % 10) / 10 - 0.5, dz = ((n * 53) % 10) / 10 - 0.5; n++;      // leve desorden
+      const mx = x + dx, mz = z + dz, r = 0.5;
+      seg([mx, 0, mz], [mx, 0.74, mz], true);
+      for (let k = 0; k < 12; k++) {
+        const a0 = k / 12 * Math.PI * 2, a1 = (k + 1) / 12 * Math.PI * 2;
+        seg([mx + Math.cos(a0) * r, 0.74, mz + Math.sin(a0) * r], [mx + Math.cos(a1) * r, 0.74, mz + Math.sin(a1) * r], true);
+      }
+    }
+  nota.push({ texto: 'Terraza', pos: [(tx0 + tx1) / 2 - 6, 2.2, tz1 - 2] });
+
+  const matCopa = new THREE.LineBasicMaterial({ color: col.azul, transparent: true, opacity: 0.22 });
+  const arbol = (x, z, r, h) => {
+    seg([x, 0, z], [x, h, z], false);
+    for (const [ax, az] of [[0.6, 0.3], [-0.5, 0.5], [0.1, -0.7]]) seg([x, h * 0.7, z], [x + ax * r, h + r * 0.2, z + az * r], true);   // ramas
+    const copa = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.IcosahedronGeometry(r, 1)), matLineaTenue);
+    copa.material = matCopa; copa.scale.y = 0.6;                                  // copas anchas y aplanadas
+    copa.position.set(x, h + r * 0.45, z);
+    escena.add(copa);
+  };
+  arbol(A + 4, B + 7, 7.5, 8);                            // el árbol grande junto al pabellón
+  arbol(-A - 8, B + 13, 6, 7);
+  [[A + 22, -6], [A + 18, 24], [-A - 34, 22], [-A - 38, -8], [-6, -B - 16], [16, -B - 14], [-28, -B - 12], [2, B + 34]].forEach(([x, z], i) => arbol(x, z, 3 + (i % 3) * 0.8, 5 + (i % 2)));
+}
+
+// Vuelca las líneas y paneles acumulados en geometrías únicas.
+function volcar() {
+  const lineas = (datos, mat) => { const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(datos, 3)); escena.add(new THREE.LineSegments(g, mat)); };
+  lineas(segFuertes, matLinea);
+  lineas(segTenues, matLineaTenue);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(cuads, 3));
+  escena.add(new THREE.Mesh(g, matCaraFuerte));
+}
+
+/* ==================================================================
+   SENSORES SOBRE EL MODELO
+   ================================================================== */
+const capaEtiquetas = $('etiquetas');
+const etiquetas = [];                                       // { el, pos }
+function crearEtiqueta(clase, pos, texto = '') {
+  const el = document.createElement('div');
+  el.className = 'etq ' + clase;
+  el.textContent = texto;
+  capaEtiquetas.appendChild(el);
+  etiquetas.push({ el, pos: new THREE.Vector3(...pos) });
+  return el;
+}
+
+const sensores = CONFIG.sensores.map((s, i) => {
+  const g = new THREE.Group();
+  g.position.set(...s.pos);
+  const mat = new THREE.MeshBasicMaterial({ color: '#8fb0d9' });
+  g.add(new THREE.Mesh(new THREE.SphereGeometry(0.3, 16, 12), mat));
+  const haz = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 3, 0)]), new THREE.LineBasicMaterial({ color: '#8fb0d9' }));
+  g.add(haz);
+  // dos anillos horizontales que se expanden y desvanecen
+  const anillos = [0, 0.5].map(fase => {
+    const m = new THREE.Mesh(new THREE.RingGeometry(0.5, 0.57, 40), new THREE.MeshBasicMaterial({ color: '#8fb0d9', transparent: true, opacity: 0.6, side: THREE.DoubleSide, depthWrite: false }));
+    m.rotation.x = -Math.PI / 2;
+    m.userData.fase = fase;
+    if (SIN_MOVIMIENTO) m.scale.setScalar(fase ? 5 : 2.5);
+    g.add(m);
+    return m;
+  });
+  escena.add(g);
+
+  // tarjeta en el panel lateral
+  const li = document.createElement('li');
+  li.innerHTML = '<button type="button"><span class="nombre"></span><span class="valor">--.- <small>dB(A)</small></span><span class="estado">SIN DATOS</span></button>';
+  li.querySelector('.nombre').textContent = s.nombre;
+  $('sensores').appendChild(li);
+  const etiqueta = crearEtiqueta('etq-sensor', [s.pos[0], s.pos[1] + 3.3, s.pos[2]], s.nombre);
+  const sensor = { ...s, i, leq: null, periodo: 2, mat, haz, anillos, tarjeta: li.firstElementChild, etiqueta };
+  sensor.tarjeta.addEventListener('click', () => volarA([s.pos[0] + 14, s.pos[1] + 10, s.pos[2] + 16], s.pos));
+  return sensor;
+});
+const porZona = new Map(sensores.map(s => [s.zona, s]));
+
+function fijarNivel(s, leq) {
+  s.leq = leq;
+  const c = clasificar(leq), k = CONFIG.pulso;
+  s.periodo = k.sLento + limitar((leq - k.dbLento) / (k.dbRapido - k.dbLento), 0, 1) * (k.sRapido - k.sLento);
+  s.mat.color.set(c.color); s.haz.material.color.set(c.color);
+  s.anillos.forEach(a => a.material.color.set(c.color));
+  s.etiqueta.textContent = `${s.nombre} · ${leq.toFixed(1)} dB`;
+  s.etiqueta.style.setProperty('--c', c.color);
+  s.tarjeta.style.setProperty('--c', c.color);
+  s.tarjeta.querySelector('.valor').firstChild.textContent = leq.toFixed(1) + ' ';
+  s.tarjeta.querySelector('.estado').textContent = c.texto;
+}
+
+/* ==================================================================
+   DATOS: MQTT en vivo o simulación si no hay broker
+   ================================================================== */
+let relojDemo = null, esperaDemo = null;
+function ponerModo(modo) {
+  const ins = $('insignia');
+  ins.dataset.modo = modo;
+  ins.textContent = { demo: 'DATOS SIMULADOS', vivo: 'EN VIVO', conectando: 'CONECTANDO…' }[modo];
+  $('aviso-demo').hidden = modo !== 'demo';
+}
+// Perfil diario simulado: bajo de noche, actividad de día y pico de almuerzo.
+function nivelDemo(s, ts) {
+  const d = new Date(ts + CONFIG.utcOffsetHoras * 3600e3), h = d.getUTCHours() + d.getUTCMinutes() / 60, dia = d.getUTCDay();
+  const jornada = 1 / (1 + Math.exp(-(h - 6.5) * 2.2)) / (1 + Math.exp((h - 20.5) * 1.6));
+  const finDeSemana = dia === 0 ? 0.25 : dia === 6 ? 0.55 : 1;
+  return s.base + finDeSemana * (s.actividad * jornada + s.almuerzo * Math.exp(-((h - 12.7) ** 2) / 1.1)) + (Math.random() * 2 - 1) * 2.5;
+}
+function iniciarDemo() {
+  esperaDemo = null;
+  if (relojDemo) return;
+  ponerModo('demo');
+  const latido = () => sensores.forEach(s => fijarNivel(s, nivelDemo(s, Date.now())));
+  latido();
+  relojDemo = setInterval(latido, CONFIG.demo.periodoMs);
+}
+function programarDemo() { if (!esperaDemo && !relojDemo) esperaDemo = setTimeout(iniciarDemo, CONFIG.mqtt.esperaDemoMs); }
+function conectarMqtt() {
+  if (typeof mqtt === 'undefined') { iniciarDemo(); return; }
+  programarDemo();
+  let cliente;
+  try { cliente = mqtt.connect(CONFIG.mqtt.url, { reconnectPeriod: CONFIG.mqtt.reconexionMs, connectTimeout: 5000, clean: true }); }
+  catch (e) { iniciarDemo(); return; }
+  const dec = new TextDecoder();
+  cliente.on('connect', () => {
+    clearTimeout(esperaDemo); esperaDemo = null;
+    clearInterval(relojDemo); relojDemo = null;
+    ponerModo('vivo');
+    cliente.subscribe(CONFIG.mqtt.topico);
+  });
+  cliente.on('message', (topico, carga) => {
+    try {
+      const m = JSON.parse(dec.decode(carga));
+      const s = porZona.get(m.zona || topico.split('/').pop());
+      if (s && isFinite(Number(m.leq))) fijarNivel(s, Number(m.leq));
+    } catch (e) { /* mensaje mal formado */ }
+  });
+  cliente.on('close', programarDemo);
+  cliente.on('error', () => {});
+}
+
+/* ==================================================================
+   CÁMARA, VISTAS Y BUCLE DE DIBUJO
+   ================================================================== */
+let vuelo = null;                                           // transición de cámara en curso
+function volarA(pos, mira) {
+  const destino = { pos: new THREE.Vector3(...pos), mira: new THREE.Vector3(...mira) };
+  controles.autoRotate = false; marcarGiro();
+  if (SIN_MOVIMIENTO) { camara.position.copy(destino.pos); controles.target.copy(destino.mira); controles.update(); }
+  else vuelo = destino;
+}
+controles.addEventListener('start', () => { vuelo = null; });   // el usuario toma el control
+
+let botonGiro, botonNotas, botonRayos;
+function marcarGiro() { if (botonGiro) botonGiro.setAttribute('aria-pressed', String(controles.autoRotate)); }
+function crearBotones() {
+  const cont = $('vistas');
+  const boton = (texto, alPulsar) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = texto; b.addEventListener('click', alPulsar); cont.appendChild(b); return b; };
+  for (const [nombre, v] of Object.entries(CONFIG.vistas)) boton(nombre, () => volarA(v.pos, v.mira));
+  if (!SIN_MOVIMIENTO) { botonGiro = boton('⟳ Giro', () => { controles.autoRotate = !controles.autoRotate; vuelo = null; marcarGiro(); }); marcarGiro(); }
+  botonRayos = boton('Rayos X', () => { const on = botonRayos.getAttribute('aria-pressed') !== 'true'; rayosX(on); botonRayos.setAttribute('aria-pressed', String(on)); });
+  botonRayos.setAttribute('aria-pressed', 'false');
+  botonNotas = boton('Anotaciones', () => { const sin = visor.classList.toggle('sin-notas'); botonNotas.setAttribute('aria-pressed', String(!sin)); });
+  botonNotas.setAttribute('aria-pressed', 'true');
+}
+
+let ancho = 1, alto = 1;
+function ajustar() {
+  ancho = visor.clientWidth; alto = visor.clientHeight;
+  renderizador.setSize(ancho, alto, false);
+  camara.aspect = ancho / alto;
+  camara.updateProjectionMatrix();
+}
+new ResizeObserver(ajustar).observe(visor);
+
+// Proyecta cada etiqueta HTML sobre su punto 3D.
+const v = new THREE.Vector3();
+function ubicarEtiquetas() {
+  for (const e of etiquetas) {
+    v.copy(e.pos).project(camara);
+    const visible = v.z < 1 && Math.abs(v.x) < 1.05 && Math.abs(v.y) < 1.05;
+    e.el.style.display = visible ? '' : 'none';
+    if (visible) e.el.style.transform = `translate(-50%, -100%) translate(${((v.x * 0.5 + 0.5) * ancho).toFixed(1)}px, ${((-v.y * 0.5 + 0.5) * alto).toFixed(1)}px)`;
+  }
+}
+
+let ultimo = 0;
+function cuadro(t) {
+  requestAnimationFrame(cuadro);
+  if (document.hidden || t - ultimo < 1000 / CONFIG.ui.fps) return;      // limita los fps y pausa en segundo plano
+  ultimo = t;
+  if (vuelo) {
+    camara.position.lerp(vuelo.pos, 0.09);
+    controles.target.lerp(vuelo.mira, 0.09);
+    if (camara.position.distanceTo(vuelo.pos) < 0.3) vuelo = null;
+  }
+  controles.update();
+  if (!SIN_MOVIMIENTO) {
+    for (const s of sensores) for (const a of s.anillos) {
+      const f = (t / 1000 / s.periodo + a.userData.fase) % 1;            // el pulso se acelera con el nivel
+      a.scale.setScalar(1 + f * 5);
+      a.material.opacity = 0.7 * (1 - f);
+    }
+  }
+  renderizador.render(escena, camara);
+  ubicarEtiquetas();
+}
+
+/* ==================================================================
+   ARRANQUE
+   ================================================================== */
+construirEdificio();
+construirEntorno();
+volcar();
+nota.forEach(n => crearEtiqueta('etq-nota', n.pos, n.texto));
+crearBotones();
+
+// Ficha con las medidas usadas por el modelo.
+const filas = [
+  ['Pabellón principal', E.largo + ' × ' + E.ancho + ' m'], ['Altura del alero', E.alturaAlero + ' m'],
+  ['Altura de cumbrera', E.alturaCumbrera + ' m'], ['Pabellón secundario', E.secundario.largo + ' × ' + E.secundario.ancho + ' m'],
+  ['Sensores', sensores.length],
+];
+$('ficha').innerHTML = filas.map(([a, b]) => `<div><dt>${a}</dt><dd>${b}</dd></div>`).join('');
+
+const inicio = Object.values(CONFIG.vistas)[0];
+camara.position.set(...inicio.pos);
+controles.target.set(...inicio.mira);
+ajustar();
+ponerModo('conectando');
+requestAnimationFrame(cuadro);
+// mqtt.js se carga con "defer": puede no estar listo aún cuando corre este módulo.
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', conectarMqtt); else conectarMqtt();
+</script>
+</body>
+</html>

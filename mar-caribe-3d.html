@@ -1,0 +1,676 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Edificio Mar Caribe 3D · Gemelo digital de ruido</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Orbitron:wght@500;700&family=Rajdhani:wght@400;500;600&display=swap" rel="stylesheet">
+
+<!-- Three.js como módulo ES desde CDN (versión fija) -->
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js" defer></script>
+
+<style>
+:root {
+  --fondo: #05070d; --azul: #1e90ff; --cian: #00e5ff; --texto: #dbeaff; --tenue: #8fb0d9;
+  --verde: #20e3a2; --amarillo: #ffd23f; --rojo: #ff3b5c;
+  --panel: rgba(8, 18, 38, .62); --borde: rgba(30, 144, 255, .35);
+  --f-titulo: "Orbitron", "Rajdhani", sans-serif;
+  --f-texto: "Rajdhani", system-ui, sans-serif;
+  --f-cifra: "JetBrains Mono", ui-monospace, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background-color: var(--fondo);
+  background-image:
+    linear-gradient(rgba(30, 144, 255, .055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(30, 144, 255, .055) 1px, transparent 1px);
+  background-size: 40px 40px;
+  color: var(--texto); font-family: var(--f-texto); font-size: 15px; line-height: 1.35;
+}
+.app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; padding: 10px; gap: 10px; }
+
+/* --- Barra superior --- */
+.barra { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 8px 14px; border: 1px solid var(--borde); background: var(--panel); box-shadow: 0 0 18px rgba(30, 144, 255, .12); }
+.barra h1 { margin: 0; font: 700 15px var(--f-titulo); letter-spacing: .14em; color: #fff; text-shadow: 0 0 10px rgba(0, 229, 255, .7); }
+.barra p { margin: 0; color: var(--tenue); font-size: 13px; letter-spacing: .06em; }
+.barra .hueco { flex: 1; }
+.barra a { color: var(--texto); font: 600 13px var(--f-texto); letter-spacing: .08em; text-transform: uppercase; text-decoration: none; border: 1px solid var(--borde); padding: 4px 10px; }
+.barra a:hover { border-color: var(--cian); color: #fff; }
+.insignia { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; font: 600 12px var(--f-cifra); letter-spacing: .08em; padding: 4px 9px; border: 1px solid var(--borde); }
+.insignia::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--tenue); }
+.insignia[data-modo="vivo"] { border-color: var(--verde); }
+.insignia[data-modo="vivo"]::before { background: var(--verde); box-shadow: 0 0 8px var(--verde); }
+.insignia[data-modo="demo"] { border-color: var(--amarillo); background: rgba(255, 210, 63, .1); }
+.insignia[data-modo="demo"]::before { background: var(--amarillo); box-shadow: 0 0 8px var(--amarillo); }
+
+/* --- Cuerpo: visor + columna de paneles --- */
+.rejilla { flex: 1; min-height: 0; display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr) 320px; }
+.visor { position: relative; min-height: 320px; overflow: hidden; border: 1px solid var(--borde); box-shadow: 0 0 24px rgba(30, 144, 255, .18); background: radial-gradient(ellipse at 50% 60%, rgba(30, 144, 255, .10), transparent 70%); }
+.visor canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+#etiquetas { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.etq { position: absolute; left: 0; top: 0; white-space: nowrap; will-change: transform; }
+.etq-sensor { padding: 2px 7px; font: 600 11px var(--f-cifra); color: #fff; background: rgba(5, 10, 22, .88); border: 1px solid var(--c, var(--tenue)); box-shadow: 0 0 8px var(--c, transparent); }
+.etq-nota { font: 500 11px var(--f-texto); letter-spacing: .1em; text-transform: uppercase; color: var(--texto); padding: 1px 6px; border-left: 2px solid var(--cian); background: rgba(5, 10, 22, .6); }
+.sin-notas .etq-nota { display: none !important; }
+.vistas { position: absolute; left: 10px; bottom: 10px; display: flex; gap: 6px; flex-wrap: wrap; max-width: calc(100% - 20px); }
+.vistas button { padding: 4px 10px; font: 600 12px var(--f-texto); letter-spacing: .08em; text-transform: uppercase; color: #fff; background: rgba(5, 10, 22, .85); border: 1px solid var(--borde); cursor: pointer; }
+.vistas button:hover { border-color: var(--cian); }
+.vistas button[aria-pressed="true"] { border-color: var(--cian); background: rgba(0, 229, 255, .16); }
+.vistas button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.aviso-demo { position: absolute; right: 10px; top: 10px; padding: 4px 12px; font: 700 11px var(--f-titulo); letter-spacing: .2em; color: #1a1400; background: var(--amarillo); box-shadow: 0 0 18px rgba(255, 210, 63, .55); }
+.aviso-demo[hidden] { display: none; }
+.rotulo-visor { position: absolute; left: 10px; top: 10px; padding: 3px 9px; font: 500 11px var(--f-titulo); letter-spacing: .18em; color: #fff; background: rgba(5, 10, 22, .75); border: 1px solid var(--cian); text-shadow: 0 0 8px var(--cian); }
+#error { position: absolute; inset: 0; display: grid; place-items: center; padding: 20px; text-align: center; color: var(--tenue); }
+#error[hidden] { display: none; }
+
+.col { display: flex; flex-direction: column; gap: 10px; min-height: 0; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--borde) transparent; }
+.panel { position: relative; padding: 12px 14px; background: var(--panel); border: 1px solid var(--borde); box-shadow: 0 0 18px rgba(30, 144, 255, .12), inset 0 0 28px rgba(30, 144, 255, .05); }
+.panel::before, .panel::after { content: ""; position: absolute; width: 12px; height: 12px; pointer-events: none; border: 2px solid var(--cian); filter: drop-shadow(0 0 4px var(--cian)); }
+.panel::before { top: -1px; left: -1px; border-right: 0; border-bottom: 0; }
+.panel::after { bottom: -1px; right: -1px; border-left: 0; border-top: 0; }
+.panel h2 { margin: 0 0 10px; font: 500 12px var(--f-titulo); letter-spacing: .16em; text-transform: uppercase; color: #fff; text-shadow: 0 0 8px rgba(0, 229, 255, .6); }
+.panel p { margin: 0 0 6px; color: var(--tenue); font-size: 13.5px; }
+
+/* Tarjetas de sensores */
+.sensores { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.sensores button { width: 100%; display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; align-items: baseline; text-align: left; padding: 8px 10px; cursor: pointer; color: var(--texto); background: rgba(5, 10, 22, .5); border: 1px solid var(--borde); border-left: 3px solid var(--c, var(--tenue)); font-family: var(--f-texto); }
+.sensores button:hover { border-color: var(--cian); border-left-color: var(--c, var(--tenue)); }
+.sensores .nombre { font-size: 14.5px; font-weight: 600; color: #fff; }
+.sensores .valor { font: 600 20px var(--f-cifra); color: #fff; }
+.sensores .valor small { font: 400 11px var(--f-cifra); color: var(--tenue); }
+.sensores .estado { grid-column: 1 / -1; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; letter-spacing: .1em; color: var(--tenue); }
+.sensores .estado::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--c, var(--tenue)); box-shadow: 0 0 6px var(--c, transparent); }
+
+.ficha { margin: 0; display: grid; gap: 5px; }
+.ficha div { display: flex; justify-content: space-between; gap: 10px; border-bottom: 1px dashed rgba(30, 144, 255, .18); padding-bottom: 4px; }
+.ficha dt { color: var(--tenue); font-size: 13.5px; }
+.ficha dd { margin: 0; font: 600 13px var(--f-cifra); color: #fff; text-align: right; }
+
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+@media (max-width: 900px) {
+  html, body { height: auto; }
+  .app { height: auto; min-height: 100vh; padding: 6px; gap: 6px; }
+  .rejilla { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .visor { height: 62vh; }
+  .col { overflow: visible; }
+}
+</style>
+</head>
+
+<body>
+<div class="app">
+  <header class="barra">
+    <div>
+      <h1>EDIFICIO DE AULAS MAR CARIBE · MODELO 3D</h1>
+      <p>Gemelo digital de ruido · Universidad del Magdalena</p>
+    </div>
+    <span class="hueco"></span>
+    <span class="insignia" id="insignia" data-modo="conectando" role="status">CONECTANDO…</span>
+    <a href="cafeteria-3d.html">Cafetería 3D</a>
+    <a href="index3d.html">← Mapa del campus</a>
+  </header>
+
+  <main class="rejilla">
+    <section class="visor" id="visor" aria-label="Modelo 3D del edificio Mar Caribe">
+      <canvas id="lienzo"></canvas>
+      <div id="etiquetas"></div>
+      <span class="rotulo-visor">GEMELO DIGITAL</span>
+      <div class="aviso-demo" id="aviso-demo" hidden>DATOS SIMULADOS</div>
+      <div class="vistas" id="vistas"></div>
+      <div id="error" hidden>No se pudo iniciar el visor 3D (¿sin acceso al CDN o sin WebGL?).</div>
+    </section>
+
+    <aside class="col">
+      <section class="panel">
+        <h2>Sensores en el edificio</h2>
+        <ul class="sensores" id="sensores"></ul>
+      </section>
+      <section class="panel">
+        <h2>Ficha del modelo</h2>
+        <dl class="ficha" id="ficha"></dl>
+        <p style="margin-top:8px">Medidas estimadas a partir de fotografías; ajústalas en <b>CONFIG.edificio</b>.</p>
+      </section>
+      <section class="panel">
+        <h2>Controles</h2>
+        <p>Arrastrar: orbitar · Rueda o pellizco: acercar · Clic derecho o dos dedos: desplazar.</p>
+      </section>
+    </aside>
+  </main>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ==================================================================
+   CONFIGURACIÓN
+   ================================================================== */
+const CONFIG = {
+  // Medidas del edificio en metros (ESTIMADAS a ojo desde las fotos: corrígelas con planos o cinta).
+  // El modelo son dos barras paralelas de aulas unidas por un atrio central cubierto.
+  // Ejes: X = largo del edificio (el letrero "Mar Caribe" mira hacia +X), Z = ancho, Y = altura.
+  edificio: {
+    largo: 60,            // largo de cada barra de aulas
+    fondoBarra: 11,       // ancho de cada barra
+    atrio: 12,            // separación entre barras (vacío central)
+    pisos: 4,
+    alturaPiso: 3.6,
+    parapeto: 1.0,        // antepecho de la cubierta
+    radioCilindro: 5.5,   // volumen cilíndrico del extremo opuesto al letrero
+  },
+
+  // Sensores colocados sobre el modelo. "zona" debe coincidir con el tópico campus/ruido/<zona>.
+  // pos = [x, y, z] en metros dentro del modelo. base/actividad/almuerzo solo se usan en la demo.
+  sensores: [
+    { zona: 'mar_caribe_plazoleta', nombre: 'Plazoleta de acceso', pos: [50, 1.5, 2],    base: 42, actividad: 15, almuerzo: 8 },
+    { zona: 'mar_caribe_atrio',     nombre: 'Atrio central',       pos: [0, 1.5, 0],     base: 41, actividad: 18, almuerzo: 9 },
+    { zona: 'mar_caribe_piso3',     nombre: 'Corredor piso 3',     pos: [12, 8.7, -4.7], base: 38, actividad: 14, almuerzo: 3 },
+  ],
+
+  mqtt: {
+    url: 'ws://' + (location.hostname || 'raspberrypi.local') + ':9001',   // sin credenciales en el navegador
+    topico: 'campus/ruido/+',
+    reconexionMs: 10000,
+    esperaDemoMs: 6000,   // sin broker durante este tiempo => datos simulados
+  },
+  niveles: { verde: 55, rojo: 65 },     // <55 verde · 55–65 amarillo · >65 rojo
+  pulso: { dbLento: 40, sLento: 2.6, dbRapido: 80, sRapido: 0.6 },
+  utcOffsetHoras: -5,
+  demo: { periodoMs: 2000 },
+  ui: { fps: 30, giroAutomatico: true, velocidadGiro: 0.5 },
+  colores: { azul: '#1e90ff', cian: '#00e5ff', verde: '#20e3a2', amarillo: '#ffd23f', rojo: '#ff3b5c' },
+
+  // Vistas predefinidas: posición de la cámara y punto al que mira.
+  vistas: {
+    'Aérea':    { pos: [88, 50, 66],   mira: [2, 5, 0] },
+    'Fachada':  { pos: [84, 11, 30],   mira: [22, 8, 2] },
+    'Atrio':    { pos: [-84, 36, 10],  mira: [-8, 6, 0] },
+    'Planta':   { pos: [0.01, 135, 0], mira: [0, 0, 0] },
+  },
+};
+
+/* ==================================================================
+   UTILIDADES
+   ================================================================== */
+const $ = id => document.getElementById(id);
+const SIN_MOVIMIENTO = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const limitar = (v, a, b) => Math.min(b, Math.max(a, v));
+function clasificar(db) {
+  if (db > CONFIG.niveles.rojo) return { color: CONFIG.colores.rojo, texto: 'NIVEL ALTO' };
+  if (db >= CONFIG.niveles.verde) return { color: CONFIG.colores.amarillo, texto: 'NIVEL MODERADO' };
+  return { color: CONFIG.colores.verde, texto: 'NIVEL BAJO' };
+}
+
+/* ==================================================================
+   ESCENA
+   ================================================================== */
+const visor = $('visor'), lienzo = $('lienzo');
+const escena = new THREE.Scene();
+let renderizador;
+try {
+  renderizador = new THREE.WebGLRenderer({ canvas: lienzo, antialias: true, alpha: true });
+} catch (e) { $('error').hidden = false; throw e; }
+renderizador.setPixelRatio(Math.min(devicePixelRatio, 1.5));     // tope para no cargar la GPU
+const camara = new THREE.PerspectiveCamera(42, 1, 1, 900);
+const controles = new OrbitControls(camara, lienzo);
+controles.enableDamping = !SIN_MOVIMIENTO;
+controles.maxPolarAngle = Math.PI / 2 - 0.02;                    // no pasar por debajo del suelo
+controles.minDistance = 15; controles.maxDistance = 320;
+controles.autoRotate = CONFIG.ui.giroAutomatico && !SIN_MOVIMIENTO;
+controles.autoRotateSpeed = CONFIG.ui.velocidadGiro;
+
+// Materiales: volúmenes azul oscuro sombreados + aristas brillantes.
+// El modo "Rayos X" vuelve las caras translúcidas para ver el interior del atrio.
+const col = CONFIG.colores;
+const matCara = new THREE.MeshLambertMaterial({ color: '#1a6fd1', emissive: '#06204a', side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
+escena.add(new THREE.AmbientLight('#ffffff', 0.9));
+const sol = new THREE.DirectionalLight('#ffffff', 2.2);
+sol.position.set(60, 90, 40);
+escena.add(sol);
+function rayosX(activo) {
+  matCara.transparent = activo;
+  matCara.opacity = activo ? 0.14 : 1;
+  matCara.blending = activo ? THREE.AdditiveBlending : THREE.NormalBlending;
+  matCara.depthWrite = !activo;
+  matCara.needsUpdate = true;
+}
+const matCaraFuerte = new THREE.MeshBasicMaterial({ color: col.cian, transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+const matLinea = new THREE.LineBasicMaterial({ color: col.cian, transparent: true, opacity: 0.9 });
+const matLineaTenue = new THREE.LineBasicMaterial({ color: col.azul, transparent: true, opacity: 0.45 });
+
+const edificio = new THREE.Group();
+escena.add(edificio);
+// Las líneas sueltas y los paneles planos se acumulan y se dibujan en una sola llamada cada uno.
+const segFuertes = [], segTenues = [], cuads = [];
+const seg = (a, b, tenue) => (tenue ? segTenues : segFuertes).push(...a, ...b);
+
+// Sólido = malla translúcida + aristas.
+function solido(geo, mat = matCara, lineas = matLinea) {
+  edificio.add(new THREE.Mesh(geo, mat));
+  edificio.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo, 25), lineas));
+}
+function caja(x0, x1, y0, y1, z0, z1, mat, lineas) {
+  const geo = new THREE.BoxGeometry(x1 - x0, y1 - y0, z1 - z0);
+  geo.translate((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
+  solido(geo, mat, lineas);
+}
+// Solo las 12 aristas de una caja (para detalles pequeños).
+function cajaAlambre(x0, x1, y0, y1, z0, z1, tenue = true) {
+  for (const y of [y0, y1]) { seg([x0, y, z0], [x1, y, z0], tenue); seg([x1, y, z0], [x1, y, z1], tenue); seg([x1, y, z1], [x0, y, z1], tenue); seg([x0, y, z1], [x0, y, z0], tenue); }
+  for (const [x, z] of [[x0, z0], [x1, z0], [x1, z1], [x0, z1]]) seg([x, y0, z], [x, y1, z], tenue);
+}
+// Rectángulo horizontal (marca de entrepiso).
+function anillo(x0, x1, z0, z1, y, tenue = true) {
+  seg([x0, y, z0], [x1, y, z0], tenue); seg([x1, y, z0], [x1, y, z1], tenue); seg([x1, y, z1], [x0, y, z1], tenue); seg([x0, y, z1], [x0, y, z0], tenue);
+}
+// Panel plano de cuatro vértices.
+const cuad = (a, b, c, d) => cuads.push(...a, ...b, ...c, ...a, ...c, ...d);
+// Prisma vertical a partir de una planta (Shape con coordenadas x, -z).
+function prisma(forma, y0, y1) {
+  const geo = new THREE.ExtrudeGeometry(forma, { depth: y1 - y0, bevelEnabled: false, curveSegments: 18 });
+  geo.rotateX(-Math.PI / 2);
+  geo.translate(0, y0, 0);
+  solido(geo);
+}
+
+/* ==================================================================
+   MODELO DEL EDIFICIO MAR CARIBE
+   Interpretación de las fotos:
+   - Dos barras largas de aulas de 4 pisos, con celosías verticales y
+     paneles en la planta baja sobre las fachadas largas exteriores.
+   - Atrio central con corredores y puentes, cubierto por un techo a dos aguas elevado.
+   - Extremo +X (plazoleta): muro curvo ciego con el letrero y torre con franja de persianas.
+   - Extremo −X: volumen cilíndrico y bloque de balcones escalonados.
+   ================================================================== */
+const E = CONFIG.edificio;
+const x0 = -E.largo / 2, x1 = E.largo / 2;
+const zA1 = -E.atrio / 2, zA0 = zA1 - E.fondoBarra;     // barra A (lado −Z)
+const zB0 = E.atrio / 2, zB1 = zB0 + E.fondoBarra;      // barra B (lado +Z)
+const hCubierta = E.pisos * E.alturaPiso;                // nivel de la losa de cubierta
+const H = hCubierta + E.parapeto;                        // altura total de las barras
+const nota = [];                                         // anotaciones del modelo
+
+function construirEdificio() {
+  // --- Barras de aulas ---
+  caja(x0, x1, 0, H, zA0, zA1);
+  caja(x0, x1, 0, H, zB0, zB1);
+  for (let k = 1; k <= E.pisos; k++) {
+    const y = k * E.alturaPiso;
+    anillo(x0, x1, zA0, zA1, y); anillo(x0, x1, zB0, zB1, y);
+  }
+
+  // --- Fachadas largas exteriores: celosías verticales arriba, paneles en planta baja ---
+  for (const z of [zA0 - 0.05, zB1 + 0.05]) {
+    for (let x = x0 + 1.5; x < x1; x += 1.5) seg([x, E.alturaPiso, z], [x, hCubierta, z], true);
+    for (let x = x0 + 2; x + 4 <= x1 - 1; x += 5.5) cuad([x, 0.3, z], [x + 4, 0.3, z], [x + 4, E.alturaPiso - 0.4, z], [x, E.alturaPiso - 0.4, z]);
+  }
+
+  // --- Atrio: corredores junto a cada barra y puentes que los unen ---
+  const anchoCorredor = 2.4;
+  for (let k = 1; k < E.pisos; k++) {
+    const y = k * E.alturaPiso;
+    caja(x0, x1, y - 0.3, y, zA1, zA1 + anchoCorredor, matCara, matLineaTenue);
+    caja(x0, x1, y - 0.3, y, zB0 - anchoCorredor, zB0, matCara, matLineaTenue);
+    for (const xp of [-E.largo * 0.28, 0, E.largo * 0.28]) caja(xp - 1.6, xp + 1.6, y - 0.3, y, zA1 + anchoCorredor, zB0 - anchoCorredor, matCara, matLineaTenue);
+    // barandas
+    seg([x0, y + 1.1, zA1 + anchoCorredor], [x1, y + 1.1, zA1 + anchoCorredor], true);
+    seg([x0, y + 1.1, zB0 - anchoCorredor], [x1, y + 1.1, zB0 - anchoCorredor], true);
+  }
+
+  // --- Cubierta elevada a dos aguas sobre el atrio ---
+  const medio = E.atrio / 2 + 2.5, yAlero = H + 1.4, yCumbrera = H + 3.2, largoTecho = E.largo * 0.72;
+  const perfil = new THREE.Shape();
+  perfil.moveTo(-medio, yAlero); perfil.lineTo(0, yCumbrera); perfil.lineTo(medio, yAlero);
+  perfil.lineTo(medio, yAlero - 0.3); perfil.lineTo(0, yCumbrera - 0.3); perfil.lineTo(-medio, yAlero - 0.3);
+  perfil.closePath();
+  const techo = new THREE.ExtrudeGeometry(perfil, { depth: largoTecho, bevelEnabled: false });
+  techo.rotateY(Math.PI / 2);
+  techo.translate(-largoTecho / 2, 0, 0);
+  solido(techo, matCaraFuerte);
+  for (let x = -largoTecho / 2; x <= largoTecho / 2 + 0.1; x += largoTecho / 6) {       // apoyos y correas
+    seg([x, H, zA1 - 1], [x, yAlero - 0.3, -medio + 1.5], false); seg([x, H, zB0 + 1], [x, yAlero - 0.3, medio - 1.5], false);
+    seg([x, yAlero, -medio], [x, yCumbrera, 0], true); seg([x, yCumbrera, 0], [x, yAlero, medio], true);
+  }
+  nota.push({ texto: 'Atrio cubierto', pos: [0, yCumbrera + 1.5, 0] });
+
+  // --- Equipos de cubierta: paneles solares (barra A) y aires acondicionados ---
+  const ys = H + 0.35;
+  for (let x = x0 + 4; x + 3 < x0 + E.largo * 0.45; x += 3.6)
+    for (let z = zA0 + 1.5; z + 2.2 < zA1 - 2.5; z += 2.7) cuad([x, ys, z], [x + 3, ys, z], [x + 3, ys, z + 2.2], [x, ys, z + 2.2]);
+  for (let i = 0; i < 7; i++) {
+    const xa = x0 + 6 + i * (E.largo - 12) / 6;
+    cajaAlambre(xa, xa + 1.4, H, H + 1, zB1 - 3.2, zB1 - 2);
+    if (i > 3) cajaAlambre(xa, xa + 1.4, H, H + 1, zA0 + 2, zA0 + 3.2);
+  }
+
+  // --- Extremo +X, barra B: muro curvo ciego con el letrero ---
+  const fondoMuro = 6, comba = 3, hMuro = H + 1;
+  const planta = new THREE.Shape();
+  planta.moveTo(x1, -zB0); planta.lineTo(x1 + fondoMuro, -zB0);
+  planta.quadraticCurveTo(x1 + fondoMuro + comba, -(zB0 + zB1) / 2, x1 + fondoMuro, -zB1);
+  planta.lineTo(x1, -zB1); planta.closePath();
+  prisma(planta, 0, hMuro);
+  const xLetrero = x1 + fondoMuro + comba / 2 + 0.25;
+  letrero(xLetrero, hMuro * 0.55, (zB0 + zB1) / 2);
+  nota.push({ texto: 'Muro curvo · letrero', pos: [x1 + fondoMuro, hMuro + 1.5, (zB0 + zB1) / 2] });
+
+  // --- Extremo +X, barra A: torre con franja de persianas ---
+  const tx0 = x1, tx1 = x1 + 7, tz0 = zA0 - 1, tz1 = zA0 + 7.5, hTorre = H + 1.6;
+  caja(tx0, tx1, 0, hTorre, tz0, tz1);
+  const pz0 = tz0 + 2.4, pz1 = pz0 + 2.8, px = tx1 + 0.06;
+  cuad([px, 2, pz0], [px, 2, pz1], [px, hTorre - 1.2, pz1], [px, hTorre - 1.2, pz0]);
+  for (let y = 2; y <= hTorre - 1.2; y += 0.45) seg([px, y, pz0], [px, y, pz1], false);
+  nota.push({ texto: 'Torre de persianas', pos: [(tx0 + tx1) / 2, hTorre + 1.5, (tz0 + tz1) / 2] });
+
+  // --- Extremo +X: galería abierta de balcones entre la torre y el muro curvo ---
+  galeria(x1, x1 + 2.6, tz1, zB0);
+
+  // --- Extremo −X, barra A: volumen cilíndrico ---
+  const cx = x0 - 1, cz = (zA0 + zA1) / 2, r = E.radioCilindro;
+  const cil = new THREE.CylinderGeometry(r, r, H, 40, 1);
+  cil.translate(cx, H / 2, cz);
+  solido(cil);
+  for (let k = 1; k <= E.pisos; k++) {
+    const y = k * E.alturaPiso;
+    for (let i = 0; i < 40; i++) {
+      const a = i / 40 * Math.PI * 2, b = (i + 1) / 40 * Math.PI * 2;
+      seg([cx + Math.cos(a) * r, y, cz + Math.sin(a) * r], [cx + Math.cos(b) * r, y, cz + Math.sin(b) * r], true);
+    }
+  }
+  nota.push({ texto: 'Volumen cilíndrico', pos: [cx, H + 1.5, cz] });
+
+  // --- Extremo −X, barra B: bloque con balcones escalonados ---
+  caja(x0 - 6, x0, 0, H, zB0 + 1, zB1);
+  for (let k = 1; k < E.pisos; k++) {
+    const y = k * E.alturaPiso, zb = zB0 + 1.5 + (k % 2) * 3.2;
+    caja(x0 - 7.6, x0 - 6, y - 0.25, y + 1.1, zb, zb + 3, matCara, matLinea);
+  }
+  galeria(x0 - 2.6, x0, zA1, zB0 + 1);
+}
+
+// Galería abierta en un extremo: losas por piso, columnas y barandas.
+function galeria(xa, xb, za, zb) {
+  const xBorde = xa < 0 ? xa : xb;                          // cara exterior
+  for (let k = 1; k < E.pisos; k++) {
+    const y = k * E.alturaPiso;
+    caja(xa, xb, y - 0.3, y, za, zb, matCara, matLineaTenue);
+    seg([xBorde, y + 1.1, za], [xBorde, y + 1.1, zb], true);
+  }
+  seg([xBorde, hCubierta, za], [xBorde, hCubierta, zb], false);
+  const n = Math.max(2, Math.round((zb - za) / 4));
+  for (let i = 0; i <= n; i++) { const z = za + (zb - za) * i / n; seg([xBorde, 0, z], [xBorde, hCubierta, z], false); }
+}
+
+// Letrero "Edificio de aulas MAR CARIBE" como textura sobre un plano frente al muro curvo.
+function letrero(x, y, z) {
+  const c = document.createElement('canvas');
+  c.width = 768; c.height = 224;
+  const tex = new THREE.CanvasTexture(c);
+  const pintar = () => {
+    const g = c.getContext('2d');
+    g.clearRect(0, 0, c.width, c.height);
+    g.textAlign = 'center'; g.shadowColor = col.cian; g.shadowBlur = 18; g.fillStyle = '#eafcff';
+    g.font = '500 44px Rajdhani, sans-serif'; g.fillText('Edificio de aulas', c.width / 2, 70);
+    g.font = '700 92px Orbitron, Rajdhani, sans-serif'; g.fillText('MAR CARIBE', c.width / 2, 170);
+    tex.needsUpdate = true;
+  };
+  pintar();
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(pintar);     // repinta con la tipografía ya cargada
+  const plano = new THREE.Mesh(new THREE.PlaneGeometry(10.4, 3.03), new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+  plano.rotation.y = Math.PI / 2;                           // mira hacia +X (la plazoleta)
+  plano.position.set(x, y, z);
+  edificio.add(plano);
+}
+
+// Entorno: rejilla del suelo, plazoleta con su trama diagonal, jardinera y árboles.
+function construirEntorno() {
+  const rejilla = new THREE.GridHelper(280, 70, col.azul, col.azul);
+  rejilla.material.transparent = true; rejilla.material.opacity = 0.16;
+  rejilla.position.y = -0.05;
+  escena.add(rejilla);
+
+  const px0 = x1 + 10, px1 = x1 + 46, pz0 = -30, pz1 = 30, y = 0.05;
+  anillo(px0, px1, pz0, pz1, y);
+  for (let d = -60; d <= 60; d += 6) {                      // trama de rombos del piso
+    for (const s of [1, -1]) {
+      const pts = [];
+      for (const x of [px0, px1]) { const z = s * (x - (px0 + px1) / 2) + d; if (z >= pz0 && z <= pz1) pts.push([x, y, z]); }
+      for (const z of [pz0, pz1]) { const x = s * (z - d) + (px0 + px1) / 2; if (x > px0 && x < px1) pts.push([x, y, z]); }
+      if (pts.length >= 2) seg(pts[0], pts[1], true);
+    }
+  }
+  const arbol = (x, z, r = 2.4, h = 4.2) => {
+    seg([x, 0, z], [x, h, z], true);
+    const copa = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.IcosahedronGeometry(r, 1)), matLineaTenue);
+    copa.position.set(x, h + r * 0.7, z);
+    escena.add(copa);
+  };
+  // jardinera circular con árbol frente a la fachada del letrero
+  const jx = x1 + 22, jz = 3;
+  for (let i = 0; i < 32; i++) { const a = i / 32 * Math.PI * 2, b = (i + 1) / 32 * Math.PI * 2; seg([jx + Math.cos(a) * 3.2, y, jz + Math.sin(a) * 3.2], [jx + Math.cos(b) * 3.2, y, jz + Math.sin(b) * 3.2], false); }
+  arbol(jx, jz, 2.2, 3.6);
+  [[x1 + 30, -22], [x1 + 14, -30], [10, 38], [-18, 42], [-44, 34], [-52, -6], [-30, -36], [6, -38], [34, -34]].forEach(([x, z], i) => arbol(x, z, 2.6 + (i % 3) * 0.7, 4 + (i % 2)));
+}
+
+// Vuelca las líneas y paneles acumulados en geometrías únicas.
+function volcar() {
+  const lineas = (datos, mat) => { const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(datos, 3)); escena.add(new THREE.LineSegments(g, mat)); };
+  lineas(segFuertes, matLinea);
+  lineas(segTenues, matLineaTenue);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(cuads, 3));
+  escena.add(new THREE.Mesh(g, matCaraFuerte));
+}
+
+/* ==================================================================
+   SENSORES SOBRE EL MODELO
+   ================================================================== */
+const capaEtiquetas = $('etiquetas');
+const etiquetas = [];                                       // { el, pos }
+function crearEtiqueta(clase, pos, texto = '') {
+  const el = document.createElement('div');
+  el.className = 'etq ' + clase;
+  el.textContent = texto;
+  capaEtiquetas.appendChild(el);
+  etiquetas.push({ el, pos: new THREE.Vector3(...pos) });
+  return el;
+}
+
+const sensores = CONFIG.sensores.map((s, i) => {
+  const g = new THREE.Group();
+  g.position.set(...s.pos);
+  const mat = new THREE.MeshBasicMaterial({ color: '#8fb0d9' });
+  g.add(new THREE.Mesh(new THREE.SphereGeometry(0.55, 16, 12), mat));
+  const haz = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 4.5, 0)]), new THREE.LineBasicMaterial({ color: '#8fb0d9' }));
+  g.add(haz);
+  // dos anillos horizontales que se expanden y desvanecen
+  const anillos = [0, 0.5].map(fase => {
+    const m = new THREE.Mesh(new THREE.RingGeometry(0.88, 1, 40), new THREE.MeshBasicMaterial({ color: '#8fb0d9', transparent: true, opacity: 0.6, side: THREE.DoubleSide, depthWrite: false }));
+    m.rotation.x = -Math.PI / 2;
+    m.userData.fase = fase;
+    if (SIN_MOVIMIENTO) m.scale.setScalar(fase ? 5 : 2.5);
+    g.add(m);
+    return m;
+  });
+  escena.add(g);
+
+  // tarjeta en el panel lateral
+  const li = document.createElement('li');
+  li.innerHTML = '<button type="button"><span class="nombre"></span><span class="valor">--.- <small>dB(A)</small></span><span class="estado">SIN DATOS</span></button>';
+  li.querySelector('.nombre').textContent = s.nombre;
+  $('sensores').appendChild(li);
+  const etiqueta = crearEtiqueta('etq-sensor', [s.pos[0], s.pos[1] + 5, s.pos[2]], s.nombre);
+  const sensor = { ...s, i, leq: null, periodo: 2, mat, haz, anillos, tarjeta: li.firstElementChild, etiqueta };
+  sensor.tarjeta.addEventListener('click', () => volarA([s.pos[0] + 34, s.pos[1] + 22, s.pos[2] + 30], s.pos));
+  return sensor;
+});
+const porZona = new Map(sensores.map(s => [s.zona, s]));
+
+function fijarNivel(s, leq) {
+  s.leq = leq;
+  const c = clasificar(leq), k = CONFIG.pulso;
+  s.periodo = k.sLento + limitar((leq - k.dbLento) / (k.dbRapido - k.dbLento), 0, 1) * (k.sRapido - k.sLento);
+  s.mat.color.set(c.color); s.haz.material.color.set(c.color);
+  s.anillos.forEach(a => a.material.color.set(c.color));
+  s.etiqueta.textContent = `${s.nombre} · ${leq.toFixed(1)} dB`;
+  s.etiqueta.style.setProperty('--c', c.color);
+  s.tarjeta.style.setProperty('--c', c.color);
+  s.tarjeta.querySelector('.valor').firstChild.textContent = leq.toFixed(1) + ' ';
+  s.tarjeta.querySelector('.estado').textContent = c.texto;
+}
+
+/* ==================================================================
+   DATOS: MQTT en vivo o simulación si no hay broker
+   ================================================================== */
+let relojDemo = null, esperaDemo = null;
+function ponerModo(modo) {
+  const ins = $('insignia');
+  ins.dataset.modo = modo;
+  ins.textContent = { demo: 'DATOS SIMULADOS', vivo: 'EN VIVO', conectando: 'CONECTANDO…' }[modo];
+  $('aviso-demo').hidden = modo !== 'demo';
+}
+// Perfil diario simulado: bajo de noche, actividad de día y pico de almuerzo.
+function nivelDemo(s, ts) {
+  const d = new Date(ts + CONFIG.utcOffsetHoras * 3600e3), h = d.getUTCHours() + d.getUTCMinutes() / 60, dia = d.getUTCDay();
+  const jornada = 1 / (1 + Math.exp(-(h - 6.5) * 2.2)) / (1 + Math.exp((h - 20.5) * 1.6));
+  const finDeSemana = dia === 0 ? 0.25 : dia === 6 ? 0.55 : 1;
+  return s.base + finDeSemana * (s.actividad * jornada + s.almuerzo * Math.exp(-((h - 12.7) ** 2) / 1.1)) + (Math.random() * 2 - 1) * 2.5;
+}
+function iniciarDemo() {
+  esperaDemo = null;
+  if (relojDemo) return;
+  ponerModo('demo');
+  const latido = () => sensores.forEach(s => fijarNivel(s, nivelDemo(s, Date.now())));
+  latido();
+  relojDemo = setInterval(latido, CONFIG.demo.periodoMs);
+}
+function programarDemo() { if (!esperaDemo && !relojDemo) esperaDemo = setTimeout(iniciarDemo, CONFIG.mqtt.esperaDemoMs); }
+function conectarMqtt() {
+  if (typeof mqtt === 'undefined') { iniciarDemo(); return; }
+  programarDemo();
+  let cliente;
+  try { cliente = mqtt.connect(CONFIG.mqtt.url, { reconnectPeriod: CONFIG.mqtt.reconexionMs, connectTimeout: 5000, clean: true }); }
+  catch (e) { iniciarDemo(); return; }
+  const dec = new TextDecoder();
+  cliente.on('connect', () => {
+    clearTimeout(esperaDemo); esperaDemo = null;
+    clearInterval(relojDemo); relojDemo = null;
+    ponerModo('vivo');
+    cliente.subscribe(CONFIG.mqtt.topico);
+  });
+  cliente.on('message', (topico, carga) => {
+    try {
+      const m = JSON.parse(dec.decode(carga));
+      const s = porZona.get(m.zona || topico.split('/').pop());
+      if (s && isFinite(Number(m.leq))) fijarNivel(s, Number(m.leq));
+    } catch (e) { /* mensaje mal formado */ }
+  });
+  cliente.on('close', programarDemo);
+  cliente.on('error', () => {});
+}
+
+/* ==================================================================
+   CÁMARA, VISTAS Y BUCLE DE DIBUJO
+   ================================================================== */
+let vuelo = null;                                           // transición de cámara en curso
+function volarA(pos, mira) {
+  const destino = { pos: new THREE.Vector3(...pos), mira: new THREE.Vector3(...mira) };
+  controles.autoRotate = false; marcarGiro();
+  if (SIN_MOVIMIENTO) { camara.position.copy(destino.pos); controles.target.copy(destino.mira); controles.update(); }
+  else vuelo = destino;
+}
+controles.addEventListener('start', () => { vuelo = null; });   // el usuario toma el control
+
+let botonGiro, botonNotas, botonRayos;
+function marcarGiro() { if (botonGiro) botonGiro.setAttribute('aria-pressed', String(controles.autoRotate)); }
+function crearBotones() {
+  const cont = $('vistas');
+  const boton = (texto, alPulsar) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = texto; b.addEventListener('click', alPulsar); cont.appendChild(b); return b; };
+  for (const [nombre, v] of Object.entries(CONFIG.vistas)) boton(nombre, () => volarA(v.pos, v.mira));
+  if (!SIN_MOVIMIENTO) { botonGiro = boton('⟳ Giro', () => { controles.autoRotate = !controles.autoRotate; vuelo = null; marcarGiro(); }); marcarGiro(); }
+  botonRayos = boton('Rayos X', () => { const on = botonRayos.getAttribute('aria-pressed') !== 'true'; rayosX(on); botonRayos.setAttribute('aria-pressed', String(on)); });
+  botonRayos.setAttribute('aria-pressed', 'false');
+  botonNotas = boton('Anotaciones', () => { const sin = visor.classList.toggle('sin-notas'); botonNotas.setAttribute('aria-pressed', String(!sin)); });
+  botonNotas.setAttribute('aria-pressed', 'true');
+}
+
+let ancho = 1, alto = 1;
+function ajustar() {
+  ancho = visor.clientWidth; alto = visor.clientHeight;
+  renderizador.setSize(ancho, alto, false);
+  camara.aspect = ancho / alto;
+  camara.updateProjectionMatrix();
+}
+new ResizeObserver(ajustar).observe(visor);
+
+// Proyecta cada etiqueta HTML sobre su punto 3D.
+const v = new THREE.Vector3();
+function ubicarEtiquetas() {
+  for (const e of etiquetas) {
+    v.copy(e.pos).project(camara);
+    const visible = v.z < 1 && Math.abs(v.x) < 1.05 && Math.abs(v.y) < 1.05;
+    e.el.style.display = visible ? '' : 'none';
+    if (visible) e.el.style.transform = `translate(-50%, -100%) translate(${((v.x * 0.5 + 0.5) * ancho).toFixed(1)}px, ${((-v.y * 0.5 + 0.5) * alto).toFixed(1)}px)`;
+  }
+}
+
+let ultimo = 0;
+function cuadro(t) {
+  requestAnimationFrame(cuadro);
+  if (document.hidden || t - ultimo < 1000 / CONFIG.ui.fps) return;      // limita los fps y pausa en segundo plano
+  ultimo = t;
+  if (vuelo) {
+    camara.position.lerp(vuelo.pos, 0.09);
+    controles.target.lerp(vuelo.mira, 0.09);
+    if (camara.position.distanceTo(vuelo.pos) < 0.3) vuelo = null;
+  }
+  controles.update();
+  if (!SIN_MOVIMIENTO) {
+    for (const s of sensores) for (const a of s.anillos) {
+      const f = (t / 1000 / s.periodo + a.userData.fase) % 1;            // el pulso se acelera con el nivel
+      a.scale.setScalar(1 + f * 5);
+      a.material.opacity = 0.7 * (1 - f);
+    }
+  }
+  renderizador.render(escena, camara);
+  ubicarEtiquetas();
+}
+
+/* ==================================================================
+   ARRANQUE
+   ================================================================== */
+construirEdificio();
+construirEntorno();
+volcar();
+nota.forEach(n => crearEtiqueta('etq-nota', n.pos, n.texto));
+crearBotones();
+
+// Ficha con las medidas usadas por el modelo.
+const filas = [
+  ['Pisos', E.pisos], ['Altura aprox.', H.toFixed(1) + ' m'],
+  ['Largo de barras', E.largo + ' m'], ['Ancho total', (2 * E.fondoBarra + E.atrio) + ' m'],
+  ['Atrio central', E.atrio + ' m'], ['Sensores', sensores.length],
+];
+$('ficha').innerHTML = filas.map(([a, b]) => `<div><dt>${a}</dt><dd>${b}</dd></div>`).join('');
+
+const inicio = Object.values(CONFIG.vistas)[0];
+camara.position.set(...inicio.pos);
+controles.target.set(...inicio.mira);
+ajustar();
+ponerModo('conectando');
+requestAnimationFrame(cuadro);
+// mqtt.js se carga con "defer": puede no estar listo aún cuando corre este módulo.
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', conectarMqtt); else conectarMqtt();
+</script>
+</body>
+</html>

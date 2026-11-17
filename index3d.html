@@ -1,0 +1,1469 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gemelo digital 3D de ruido · Universidad del Magdalena</title>
+
+<!-- Tipografías técnicas -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Orbitron:wght@500;700&family=Rajdhani:wght@400;500;600&display=swap" rel="stylesheet">
+
+<!-- Librerías desde CDN (versiones fijas) -->
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js" defer></script>
+
+<style>
+/* ============================================================
+   VARIABLES (los colores se sobrescriben desde CONFIG.colores)
+   ============================================================ */
+:root {
+  --fondo: #05070d;
+  --azul: #1e90ff;
+  --cian: #00e5ff;
+  --texto: #dbeaff;
+  --tenue: #8fb0d9;
+  --verde: #20e3a2;
+  --amarillo: #ffd23f;
+  --rojo: #ff3b5c;
+  --panel: rgba(8, 18, 38, .58);
+  --borde: rgba(30, 144, 255, .35);
+  --corte: 50%;                       /* posición del deslizador del mapa */
+  --f-titulo: "Orbitron", "Rajdhani", sans-serif;
+  --f-texto: "Rajdhani", system-ui, sans-serif;
+  --f-cifra: "JetBrains Mono", ui-monospace, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background-color: var(--fondo);
+  /* cuadrícula tenue de fondo */
+  background-image:
+    linear-gradient(rgba(30, 144, 255, .055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(30, 144, 255, .055) 1px, transparent 1px);
+  background-size: 40px 40px;
+  color: var(--texto);
+  font-family: var(--f-texto);
+  font-size: 15px;
+  line-height: 1.35;
+}
+#lluvia { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 0; }
+
+/* ============================================================
+   ESTRUCTURA GENERAL
+   ============================================================ */
+.app { position: relative; z-index: 1; display: flex; flex-direction: column; height: 100vh; height: 100dvh; padding: 10px; gap: 10px; }
+
+.barra {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 8px 14px; border: 1px solid var(--borde); background: var(--panel);
+  box-shadow: 0 0 18px rgba(30, 144, 255, .12);
+}
+.marca { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.marca svg { width: 34px; height: 34px; flex: none; filter: drop-shadow(0 0 6px var(--cian)); }
+.marca h1 {
+  margin: 0; font: 700 15px var(--f-titulo); letter-spacing: .14em; color: #fff;
+  text-shadow: 0 0 10px rgba(0, 229, 255, .7);
+}
+.marca p { margin: 0; color: var(--tenue); font-size: 13px; letter-spacing: .06em; }
+.zonas { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+.zonas button {
+  font: 600 13px var(--f-texto); letter-spacing: .08em; text-transform: uppercase;
+  color: var(--tenue); background: transparent; border: 1px solid var(--borde);
+  padding: 4px 10px; cursor: pointer;
+}
+.zonas button:hover { color: #fff; border-color: var(--azul); }
+.zonas button[aria-pressed="true"] {
+  color: #fff; border-color: var(--cian); background: rgba(0, 229, 255, .1);
+  box-shadow: 0 0 10px rgba(0, 229, 255, .35);
+}
+.zonas button:focus-visible, .asa:focus-visible span, .btn-mapa:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.asa:focus-visible { outline: none; }
+.estado-barra { display: flex; align-items: center; gap: 12px; }
+.insignia {
+  display: inline-flex; align-items: center; gap: 7px; white-space: nowrap;
+  font: 600 12px var(--f-cifra); letter-spacing: .08em; padding: 4px 9px;
+  border: 1px solid var(--borde); color: var(--texto);
+}
+.insignia::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--tenue); }
+.insignia[data-modo="vivo"] { border-color: var(--verde); }
+.insignia[data-modo="vivo"]::before { background: var(--verde); box-shadow: 0 0 8px var(--verde); }
+.insignia[data-modo="demo"] { border-color: var(--amarillo); background: rgba(255, 210, 63, .1); }
+.insignia[data-modo="demo"]::before { background: var(--amarillo); box-shadow: 0 0 8px var(--amarillo); animation: latido 1.6s ease-in-out infinite; }
+.reloj { font: 400 14px var(--f-cifra); color: var(--tenue); }
+.enlace { color: var(--texto); font: 600 13px var(--f-texto); letter-spacing: .08em; text-transform: uppercase; text-decoration: none; border: 1px solid var(--borde); padding: 4px 10px; white-space: nowrap; }
+.enlace:hover { border-color: var(--cian); color: #fff; }
+
+.rejilla {
+  flex: 1; min-height: 0; display: grid; gap: 10px;
+  grid-template-columns: 300px minmax(0, 1fr) 400px;
+  grid-template-areas: "izq mapa der";
+}
+.col { display: flex; flex-direction: column; gap: 10px; min-height: 0; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--borde) transparent; }
+.col-izq { grid-area: izq; }
+.col-der { grid-area: der; }
+
+/* ============================================================
+   PANELES HUD
+   ============================================================ */
+.panel {
+  position: relative; padding: 12px 14px; flex: none;
+  background: var(--panel); border: 1px solid var(--borde);
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+  box-shadow: 0 0 18px rgba(30, 144, 255, .12), inset 0 0 28px rgba(30, 144, 255, .05);
+}
+/* esquinas tipo visor */
+.panel::before, .panel::after {
+  content: ""; position: absolute; width: 12px; height: 12px; pointer-events: none;
+  border: 2px solid var(--cian); filter: drop-shadow(0 0 4px var(--cian));
+}
+.panel::before { top: -1px; left: -1px; border-right: 0; border-bottom: 0; }
+.panel::after { bottom: -1px; right: -1px; border-left: 0; border-top: 0; }
+.panel h2 {
+  display: flex; align-items: baseline; gap: 8px; margin: 0 0 10px;
+  font: 500 12px var(--f-titulo); letter-spacing: .16em; text-transform: uppercase;
+  color: #fff; text-shadow: 0 0 8px rgba(0, 229, 255, .6);
+}
+.panel h2 .num { font: 400 11px var(--f-cifra); color: var(--cian); }
+.panel h2 em { margin-left: auto; font: 600 12px var(--f-texto); letter-spacing: .08em; color: var(--tenue); text-shadow: none; font-style: normal; }
+.nota { margin: 8px 0 0; font-size: 12.5px; color: var(--tenue); }
+.nota[hidden] { display: none; }
+
+/* --- 01 Nivel en vivo --- */
+.medidor { position: relative; width: 190px; margin: 0 auto; }
+.medidor svg { display: block; width: 100%; }
+.medidor circle { fill: none; stroke-width: 9; }
+.medidor .pista { stroke: rgba(30, 144, 255, .16); stroke-dasharray: 395.8 527.8; }
+.medidor .valor {
+  stroke: var(--nivel, var(--tenue)); stroke-dasharray: 0 527.8;
+  transition: stroke-dasharray .6s ease, stroke .4s; filter: drop-shadow(0 0 6px var(--nivel, transparent));
+}
+.medidor .marca-umbral { stroke: #fff; stroke-width: 1.5; opacity: .8; }
+.medidor .texto-umbral { fill: var(--tenue); font: 400 9px var(--f-cifra); text-anchor: middle; }
+.lectura { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding-top: 6px; }
+.cifra { font: 600 40px/1 var(--f-cifra); color: #fff; text-shadow: 0 0 14px rgba(0, 229, 255, .65); }
+.unidad { margin-top: 4px; font: 400 11px var(--f-cifra); color: var(--tenue); }
+.veredicto { margin-top: 8px; display: inline-flex; align-items: center; gap: 6px; font: 600 12px var(--f-texto); letter-spacing: .1em; color: var(--texto); }
+.veredicto::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--nivel, var(--tenue)); box-shadow: 0 0 8px var(--nivel, transparent); }
+.datos { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; margin: 6px 0 0; }
+.datos div { border-top: 1px solid rgba(30, 144, 255, .2); padding-top: 5px; }
+.datos .ancho { grid-column: 1 / -1; }
+.datos dt { font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--tenue); }
+.datos dd { margin: 0; font: 600 17px var(--f-cifra); color: #fff; }
+.datos dd small { font: 400 11px var(--f-cifra); color: var(--tenue); }
+
+/* --- 02 Gráfica 24 h --- */
+.lienzo-24h { position: relative; height: 230px; }
+
+/* --- 03 Mapa de calor semanal --- */
+.semana { display: grid; grid-template-columns: 30px repeat(24, minmax(0, 1fr)); gap: 2px; align-items: center; }
+.semana .dia, .semana .hora { font: 400 10px var(--f-cifra); color: var(--tenue); }
+.semana .hora { text-align: center; }
+.semana .celda { aspect-ratio: 1; min-height: 11px; background: rgba(30, 144, 255, .06); border-radius: 1px; }
+.semana .celda.sobre { box-shadow: inset 0 0 0 1.5px var(--rojo); }
+.semana .celda:hover { outline: 1px solid #fff; }
+.leyenda { display: flex; align-items: center; gap: 8px; margin-top: 10px; font: 400 10.5px var(--f-cifra); color: var(--tenue); flex-wrap: wrap; }
+.leyenda .rampa { flex: 1; min-width: 80px; height: 8px; }
+.leyenda .clave { display: inline-flex; align-items: center; gap: 5px; }
+.leyenda .clave::before { content: ""; width: 10px; height: 10px; box-shadow: inset 0 0 0 1.5px var(--rojo); }
+#globo {
+  position: fixed; z-index: 50; pointer-events: none; padding: 5px 8px; white-space: nowrap;
+  background: rgba(5, 10, 22, .95); border: 1px solid var(--cian); font: 400 12px var(--f-cifra); color: #fff;
+}
+#globo[hidden] { display: none; }
+
+/* --- 04 Estado del sistema --- */
+.sistema { margin: 0; display: grid; gap: 5px; }
+.sistema div { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; border-bottom: 1px dashed rgba(30, 144, 255, .18); padding-bottom: 4px; }
+.sistema dt { color: var(--tenue); font-size: 13.5px; }
+.sistema dd { margin: 0; font: 600 13px var(--f-cifra); color: #fff; text-align: right; }
+.sistema dd[data-e]::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; background: var(--tenue); }
+.sistema dd[data-e="ok"]::before { background: var(--verde); box-shadow: 0 0 6px var(--verde); }
+.sistema dd[data-e="aviso"]::before { background: var(--amarillo); box-shadow: 0 0 6px var(--amarillo); }
+.sistema dd[data-e="mal"]::before { background: var(--rojo); box-shadow: 0 0 6px var(--rojo); }
+
+/* --- 05 Registro de eventos --- */
+#p-eventos { flex: 1 1 150px; min-height: 150px; display: flex; flex-direction: column; }
+.eventos { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; min-height: 0; scrollbar-width: thin; scrollbar-color: var(--borde) transparent; }
+.eventos li { padding: 6px 0 6px 10px; border-left: 2px solid var(--rojo); margin-bottom: 6px; background: linear-gradient(90deg, rgba(255, 59, 92, .08), transparent); }
+.eventos li.activo { border-left-color: #fff; }
+.eventos .cuando { font: 400 11.5px var(--f-cifra); color: var(--tenue); }
+.eventos .que { font-size: 14px; color: #fff; }
+.eventos .que b { font-family: var(--f-cifra); font-weight: 600; }
+.eventos .etq { font: 600 10px var(--f-cifra); border: 1px solid #fff; padding: 0 4px; margin-left: 6px; animation: latido 1.6s ease-in-out infinite; }
+.eventos .vacio { border: 0; background: none; color: var(--tenue); padding-left: 0; }
+
+/* ============================================================
+   MAPA: REAL | GEMELO DIGITAL
+   ============================================================ */
+.mapa-marco {
+  grid-area: mapa; position: relative; min-height: 320px; overflow: hidden;
+  border: 1px solid var(--borde); box-shadow: 0 0 24px rgba(30, 144, 255, .18);
+}
+#mapa-real, #mapa-digital { position: absolute; inset: 0; background: #060b16; font-family: var(--f-texto); }
+#mapa-real { z-index: 0; }
+/* El mapa digital va encima y se recorta a la derecha del deslizador */
+#mapa-digital { z-index: 1; clip-path: inset(0 0 0 var(--corte)); }
+.rotulo-edificio {
+  font: 600 11px var(--f-cifra); letter-spacing: .08em; text-transform: uppercase; white-space: nowrap;
+  color: #e8fbff; text-shadow: 0 0 6px var(--cian), 0 0 2px #000; pointer-events: none;
+}
+
+/* Velo sobre el lado digital: retícula + barrido de luz */
+.velo { position: absolute; top: 0; bottom: 0; left: var(--corte); right: 0; z-index: 1; pointer-events: none; overflow: hidden;
+  background-image:
+    linear-gradient(rgba(0, 229, 255, .07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 229, 255, .07) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+.velo::after {
+  content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 140px;
+  background: linear-gradient(90deg, transparent, rgba(0, 229, 255, .13), transparent);
+  animation: barrido 9s linear infinite;
+}
+/* Deslizador vertical */
+.asa {
+  position: absolute; top: 0; bottom: 0; left: var(--corte); width: 40px; margin-left: -20px; z-index: 3;
+  cursor: ew-resize; touch-action: none; background: none; border: 0; padding: 0;
+}
+.asa::before { content: ""; position: absolute; top: 0; bottom: 0; left: 19px; width: 2px; background: var(--cian); box-shadow: 0 0 10px var(--cian), 0 0 22px var(--azul); }
+.asa span {
+  position: absolute; top: 50%; left: 50%; width: 38px; height: 38px; margin: -19px; border-radius: 50%;
+  display: grid; place-items: center; background: rgba(5, 10, 22, .9); border: 2px solid var(--cian);
+  box-shadow: 0 0 14px var(--cian); color: #fff; font: 600 13px var(--f-cifra);
+}
+.rotulo-lado {
+  position: absolute; top: 10px; z-index: 2; pointer-events: none; padding: 3px 9px;
+  font: 500 11px var(--f-titulo); letter-spacing: .18em; color: #fff;
+  background: rgba(5, 10, 22, .75); border: 1px solid var(--borde);
+}
+.rotulo-lado.real { left: 10px; }
+.rotulo-lado.digital { right: 56px; border-color: var(--cian); text-shadow: 0 0 8px var(--cian); }
+.aviso-demo {
+  position: absolute; left: 50%; bottom: 46px; transform: translateX(-50%); z-index: 2; pointer-events: none;
+  padding: 5px 14px; font: 700 12px var(--f-titulo); letter-spacing: .22em; white-space: nowrap;
+  color: #1a1400; background: var(--amarillo); box-shadow: 0 0 18px rgba(255, 210, 63, .55);
+}
+.aviso-demo[hidden] { display: none; }
+.pie-mapa { position: absolute; left: 10px; bottom: 10px; z-index: 2; display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; max-width: calc(100% - 20px); pointer-events: none; }
+.pie-mapa > * { pointer-events: auto; }
+.coords { padding: 3px 8px; font: 400 11px var(--f-cifra); color: var(--texto); background: rgba(5, 10, 22, .8); border: 1px solid var(--borde); }
+.btn-mapa { padding: 3px 10px; font: 600 12px var(--f-texto); letter-spacing: .08em; text-transform: uppercase; color: #fff; background: rgba(5, 10, 22, .85); border: 1px solid var(--cian); cursor: pointer; }
+.btn-mapa:hover { background: rgba(0, 229, 255, .18); }
+.trazando .maplibregl-canvas { cursor: crosshair; }
+#salida-trazo { width: min(420px, 80vw); height: 90px; font: 400 11px var(--f-cifra); color: var(--texto); background: rgba(5, 10, 22, .95); border: 1px solid var(--cian); padding: 6px; }
+#salida-trazo[hidden] { display: none; }
+
+/* Controles de MapLibre con el estilo del visor */
+.maplibregl-ctrl-group { background: rgba(5, 10, 22, .85) !important; border: 1px solid var(--borde); border-radius: 0 !important; box-shadow: none !important; }
+.maplibregl-ctrl-group button + button { border-top-color: var(--borde); }
+.maplibregl-ctrl-group .maplibregl-ctrl-icon { filter: invert(1); }
+.maplibregl-ctrl-attrib { background: rgba(5, 10, 22, .75) !important; color: var(--tenue); font-size: 10px; }
+.maplibregl-ctrl-attrib a { color: var(--texto); }
+.maplibregl-ctrl-attrib-button { filter: invert(1); }
+
+/* Marcador holográfico de sensor */
+.sensor { position: relative; width: 64px; height: 64px; --c: var(--verde); --t: 2s; cursor: pointer; }
+.sensor .anillo { position: absolute; inset: 0; border-radius: 50%; border: 1.5px solid var(--c); opacity: 0; animation: pulso var(--t) ease-out infinite; }
+.sensor .a2 { animation-delay: calc(var(--t) / 2); }
+.sensor .nucleo { position: absolute; left: 50%; top: 50%; width: 12px; height: 12px; margin: -6px; border-radius: 50%; background: var(--c); border: 2px solid #05070d; box-shadow: 0 0 10px var(--c), 0 0 22px var(--c); }
+.sensor .haz { position: absolute; left: 50%; bottom: 50%; width: 1px; height: 30px; background: linear-gradient(to top, var(--c), transparent); }
+.sensor .etiqueta {
+  position: absolute; left: 50%; bottom: calc(50% + 30px); transform: translateX(-50%); white-space: nowrap;
+  padding: 2px 7px; font: 600 11px var(--f-cifra); color: #fff; background: rgba(5, 10, 22, .88);
+  border: 1px solid var(--c); box-shadow: 0 0 8px var(--c);
+}
+.sensor.sel .nucleo { outline: 2px solid #fff; outline-offset: 3px; }
+
+/* ============================================================
+   ANIMACIONES (sobrias) y accesibilidad
+   ============================================================ */
+@keyframes pulso { from { transform: scale(.2); opacity: .9; } to { transform: scale(1); opacity: 0; } }
+@keyframes latido { 50% { opacity: .45; } }
+@keyframes barrido { from { transform: translateX(-160px); } to { transform: translateX(110vw); } }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+  .sensor .anillo { opacity: .55; transform: scale(.7); }
+  .sensor .a2 { transform: scale(1); opacity: .3; }
+}
+
+/* ============================================================
+   ADAPTABLE: tableta y celular (paneles debajo del mapa)
+   ============================================================ */
+@media (max-width: 1180px) {
+  html, body { height: auto; }
+  .app { height: auto; min-height: 100vh; }
+  .rejilla { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "mapa mapa" "izq der"; }
+  .mapa-marco { height: 60vh; }
+  .col { overflow: visible; }
+  #p-eventos { max-height: 320px; }
+}
+@media (max-width: 720px) {
+  .app { padding: 6px; gap: 6px; }
+  .rejilla { grid-template-columns: minmax(0, 1fr); grid-template-areas: "mapa" "izq" "der"; gap: 6px; }
+  .mapa-marco { height: 56vh; }
+  .zonas { margin-left: 0; order: 3; width: 100%; }
+  .estado-barra { margin-left: auto; }
+  .marca p { display: none; }
+  /* el desenfoque es costoso en celulares: se sustituye por un fondo más opaco */
+  .panel { -webkit-backdrop-filter: none; backdrop-filter: none; background: rgba(8, 18, 38, .88); }
+}
+</style>
+</head>
+
+<body>
+<canvas id="lluvia" aria-hidden="true"></canvas>
+
+<div class="app">
+  <header class="barra">
+    <div class="marca">
+      <svg viewBox="0 0 40 40" aria-hidden="true" fill="none" stroke="#00e5ff" stroke-width="1.6">
+        <circle cx="20" cy="20" r="17" opacity=".45"/><circle cx="20" cy="20" r="10"/>
+        <path d="M13 20h2l2-6 3 12 3-9 2 3h2" stroke="#fff" stroke-linejoin="round" stroke-linecap="round"/>
+      </svg>
+      <div>
+        <h1>GEMELO DIGITAL · RUIDO AMBIENTAL</h1>
+        <p>Universidad del Magdalena · Santa Marta, Colombia</p>
+      </div>
+    </div>
+    <nav class="zonas" id="zonas" aria-label="Zonas monitoreadas"></nav>
+    <div class="estado-barra">
+      <a class="enlace" href="cafeteria-3d.html">Cafetería 3D →</a>
+      <a class="enlace" href="mar-caribe-3d.html">Mar Caribe 3D →</a>
+      <span class="insignia" id="insignia" data-modo="conectando" role="status">CONECTANDO…</span>
+      <span class="reloj" id="reloj" title="Hora del campus">--:--:--</span>
+    </div>
+  </header>
+
+  <main class="rejilla">
+    <!-- ================= MAPA ================= -->
+    <section class="mapa-marco" id="marco" aria-label="Mapa del campus: imagen real y gemelo digital">
+      <div id="mapa-real"></div>
+      <div id="mapa-digital"></div>
+      <div class="velo" aria-hidden="true"></div>
+      <span class="rotulo-lado real">REAL</span>
+      <span class="rotulo-lado digital">GEMELO DIGITAL</span>
+      <button class="asa" id="asa" role="slider" aria-label="Dividir entre imagen real y gemelo digital"
+              aria-valuemin="0" aria-valuemax="100" aria-valuenow="50"><span>◂▸</span></button>
+      <div class="aviso-demo" id="aviso-demo" hidden>DATOS SIMULADOS</div>
+      <div class="pie-mapa">
+        <span class="coords" id="coords" title="Coordenadas bajo el cursor (lat, lon)">lat —, lon —</span>
+        <button class="btn-mapa" id="btn-vista" title="Alterna entre vista cenital e inclinada. Clic derecho + arrastrar (o dos dedos) para girar e inclinar">▦ Vista 2D</button>
+        <button class="btn-mapa" id="btn-trazar" title="Haz clic en las esquinas de un edificio y obtén su GeoJSON">✎ Trazar edificio</button>
+        <textarea id="salida-trazo" hidden readonly aria-label="GeoJSON del edificio trazado"></textarea>
+      </div>
+    </section>
+
+    <!-- ================= COLUMNA IZQUIERDA ================= -->
+    <aside class="col col-izq">
+      <section class="panel" id="p-vivo">
+        <h2><span class="num">01</span> Nivel en vivo <em id="vivo-zona">—</em></h2>
+        <div class="medidor">
+          <svg viewBox="0 0 200 200" role="img" aria-label="Medidor circular del nivel sonoro">
+            <g transform="rotate(135 100 100)">
+              <circle class="pista" cx="100" cy="100" r="84"/>
+              <circle class="valor" id="arco" cx="100" cy="100" r="84"/>
+            </g>
+            <g id="marcas"></g>
+          </svg>
+          <div class="lectura">
+            <div class="cifra" id="leq">--.-</div>
+            <div class="unidad">dB(A) · Leq</div>
+            <div class="veredicto" id="veredicto">SIN DATOS</div>
+          </div>
+        </div>
+        <dl class="datos">
+          <div><dt>Lmax · último min</dt><dd><span id="lmax">--.-</span> <small>dB(A)</small></dd></div>
+          <div><dt>Última lectura</dt><dd id="ultima">--:--:--</dd></div>
+          <div class="ancho"><dt>Límite vigente · Res. 627/2006</dt><dd><span id="limite">--</span> <small id="periodo">dB(A)</small></dd></div>
+        </dl>
+      </section>
+
+      <section class="panel" id="p-sistema">
+        <h2><span class="num">04</span> Estado del sistema</h2>
+        <dl class="sistema">
+          <div><dt>Broker MQTT</dt><dd id="s-broker" data-e="">—</dd></div>
+          <div><dt>Nodo</dt><dd id="s-nodo" data-e="">—</dd></div>
+          <div><dt>Última secuencia</dt><dd id="s-seq">—</dd></div>
+          <div><dt>Paquetes perdidos</dt><dd id="s-perdidos">—</dd></div>
+          <div><dt>Respaldo SD</dt><dd id="s-sd" data-e="">—</dd></div>
+        </dl>
+      </section>
+
+      <section class="panel" id="p-eventos">
+        <h2><span class="num">05</span> Registro de eventos</h2>
+        <ul class="eventos" id="eventos"><li class="vacio">Sin superaciones registradas.</li></ul>
+      </section>
+    </aside>
+
+    <!-- ================= COLUMNA DERECHA ================= -->
+    <aside class="col col-der">
+      <section class="panel" id="p-24h">
+        <h2><span class="num">02</span> Últimas 24 h <em>Leq 15 min · dB(A)</em></h2>
+        <div class="lienzo-24h"><canvas id="grafica" role="img" aria-label="Leq de las últimas 24 horas frente al límite normativo"></canvas></div>
+        <p class="nota" id="nota-historico" hidden>Histórico no disponible: se muestran solo los datos recibidos en esta sesión.</p>
+      </section>
+
+      <section class="panel" id="p-semana">
+        <h2><span class="num">03</span> Patrón semanal <em>Leq medio por hora</em></h2>
+        <div class="semana" id="semana" role="img" aria-label="Mapa de calor: horas del día contra días de la semana"></div>
+        <div class="leyenda">
+          <span id="ley-min">35</span><span class="rampa" id="rampa"></span><span id="ley-max">75 dB(A)</span>
+          <span class="clave">supera el límite</span>
+        </div>
+      </section>
+    </aside>
+  </main>
+</div>
+<div id="globo" hidden></div>
+
+<script>
+/* ==================================================================
+   CONFIGURACIÓN — todo lo ajustable vive aquí
+   ================================================================== */
+const CONFIG = {
+  // --- Mapa ---
+  mapa: {
+    centro: [11.2235, -74.1865],      // lat, lon del campus (ajustar)
+    zoom: 16.3,                        // escala MapLibre (≈ zoom de Leaflet − 1)
+    zoomMin: 14,
+    zoomMax: 19.5,
+    inclinacion: 58,                   // grados de inclinación de la vista 3D (0 = cenital)
+    inclinacionMax: 72,
+    rumbo: -20,                        // giro de la cámara en grados (0 = norte arriba)
+    tinteDigital: '#0a3d91',           // velo azul del lado digital
+    zoomNativoMax: 18,                 // máximo nivel con teselas reales de Esri en la zona
+    teselas: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    atribucion: 'Imagen &copy; Esri, Maxar, Earthstar Geographics',
+    corteInicial: 0.5,                 // posición del deslizador (0 = todo digital, 1 = todo real)
+  },
+
+  // --- Edificios en volumen (cada polígono puede traer su propia "altura" en metros) ---
+  edificios: { alturaPorDefecto: 8, opacidad: 0.55 },
+
+  // --- MQTT sobre WebSockets (Mosquitto en la Raspberry Pi) ---
+  // No pongas usuario/contraseña aquí: configura en Mosquitto un listener
+  // WebSocket de solo lectura (ACL "read campus/ruido/#") para el panel.
+  mqtt: {
+    url: 'ws://' + (location.hostname || 'raspberrypi.local') + ':9001',
+    topico: 'campus/ruido/+',
+    reconexionMs: 10000,               // cada cuánto reintenta conectar
+    esperaDemoMs: 6000,                // sin broker durante este tiempo => modo demostración
+  },
+
+  // --- Histórico (endpoint propio; las credenciales de la BD se quedan en el servidor) ---
+  // GET /api/historico?zona=cafeteria&desde=<ISO 8601>&hasta=<ISO 8601>&res=1m|15m
+  // Respuesta esperada: { "agg1m": [{"ts":..,"leq":..,"lmax":..}, ...],
+  //                       "agg15m": [{"ts":..,"leq":..,"lmax":..}, ...] }
+  // "res" es opcional: si el servidor lo ignora y devuelve ambos arreglos, también funciona.
+  api: {
+    historico: '/api/historico',
+    timeoutMs: 8000,
+  },
+
+  // --- Normativa y clasificación ---
+  umbrales: {
+    diurno: 65,                        // dB(A), Res. 627 de 2006
+    nocturno: 55,
+    inicioDiurno: 7,                   // 07:01 – 21:00 diurno; resto nocturno
+    finDiurno: 21,
+  },
+  niveles: { verde: 55, rojo: 65 },    // <55 verde · 55–65 amarillo · >65 rojo
+  eventos: { duracionMinMs: 5 * 60 * 1000, maximo: 50 },
+
+  // --- Hora del campus (Colombia no tiene horario de verano) ---
+  utcOffsetHoras: -5,
+
+  // --- Nodo ---
+  nodo: {
+    sinDatosMs: 15000,                 // sin mensajes durante este tiempo => "sin datos"
+    huecoMaximo: 5000,                 // salto de secuencia mayor => se asume reinicio del nodo
+  },
+
+  // --- Presentación ---
+  medidor: { min: 30, max: 100 },
+  calor: { min: 40, max: 85, radio: 70, desenfoque: 45, minimoSensores: 3 },
+  pulso: { dbLento: 40, sLento: 2.6, dbRapido: 80, sRapido: 0.6 },
+  ui: { refrescoGraficaMs: 30000, fpsFondo: 12 },
+  colores: {
+    fondo: '#05070d', azul: '#1e90ff', cian: '#00e5ff', texto: '#dbeaff', tenue: '#8fb0d9',
+    verde: '#20e3a2', amarillo: '#ffd23f', rojo: '#ff3b5c',
+  },
+  // Rampa secuencial (un solo tono, de oscuro a claro) para el patrón semanal
+  rampaSemana: [[35, '#0a1c3a'], [50, '#12509c'], [60, '#1e90ff'], [68, '#00e5ff'], [75, '#eafcff']],
+
+  // --- Nombres visibles de las zonas (clave = "zona" del mensaje MQTT) ---
+  zonas: {
+    cafeteria: 'Cafetería',
+    aulas_rio_magdalena: 'Aulas Río Magdalena',
+    biblioteca: 'Biblioteca',
+    bienestar: 'Bienestar Universitario',
+  },
+
+  // --- Modo de demostración ---
+  // Con una sola zona verás solo el marcador; con 3 o más se activa el mapa de calor.
+  // Perfil: base nocturna + actividad diurna + pico de almuerzo + picos de descansos (dB).
+  demo: {
+    periodoMs: 2000,
+    zonas: [
+      { id: 'cafeteria',           lat: 11.22350, lon: -74.18650, base: 41, actividad: 15, almuerzo: 12, descansos: 6 },
+      { id: 'aulas_rio_magdalena', lat: 11.22455, lon: -74.18700, base: 40, actividad: 14, almuerzo: 4,  descansos: 10 },
+      { id: 'biblioteca',          lat: 11.22290, lon: -74.18760, base: 36, actividad: 9,  almuerzo: 2,  descansos: 3 },
+      { id: 'bienestar',           lat: 11.22420, lon: -74.18560, base: 40, actividad: 13, almuerzo: 6,  descansos: 5 },
+    ],
+  },
+};
+
+/* ==================================================================
+   EDIFICIOS — GeoJSON editable (coordenadas en [lon, lat])
+   El polígono de la cafetería es un EJEMPLO aproximado: corrígelo con
+   el botón "Trazar edificio" del mapa o exportando huellas desde OSM.
+   ================================================================== */
+const EDIFICIOS = {
+  type: 'FeatureCollection',
+  features: [
+    {
+      type: 'Feature',
+      properties: { nombre: 'Cafetería', altura: 6 },   // altura en metros
+      geometry: {
+        type: 'Polygon',
+        coordinates: [[
+          [-74.18672, 11.22362], [-74.18628, 11.22362], [-74.18628, 11.22338],
+          [-74.18672, 11.22338], [-74.18672, 11.22362],
+        ]],
+      },
+    },
+  ],
+};
+
+/* ==================================================================
+   UTILIDADES
+   ================================================================== */
+const $ = id => document.getElementById(id);
+const SIN_MOVIMIENTO = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const MIN = 60 * 1000, HORA = 60 * MIN, DIA = 24 * HORA, CUBETA = 15 * MIN;
+const DIAS = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
+const pad = n => String(n).padStart(2, '0');
+const limitar = (v, a, b) => Math.min(b, Math.max(a, v));
+
+// Los decibelios no se promedian directamente: se pasa a energía y se vuelve.
+const aEnergia = db => Math.pow(10, db / 10);
+const aDb = e => 10 * Math.log10(e);
+
+// Fecha desplazada a la hora del campus: leer SIEMPRE con getUTC*().
+const enCampus = ts => new Date(ts + CONFIG.utcOffsetHoras * HORA);
+const horaDecimal = ts => { const d = enCampus(ts); return d.getUTCHours() + d.getUTCMinutes() / 60; };
+const fmtHMS = ts => { const d = enCampus(ts); return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`; };
+const fmtHM = ts => fmtHMS(ts).slice(0, 5);
+const fmtFecha = ts => { const d = enCampus(ts); return `${DIAS[(d.getUTCDay() + 6) % 7]} ${pad(d.getUTCDate())}/${pad(d.getUTCMonth() + 1)} ${fmtHM(ts)}`; };
+const fmtDuracion = ms => { const m = Math.round(ms / MIN); return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${pad(m % 60)} min`; };
+
+// Acepta ts en segundos, milisegundos o texto ISO.
+function normalizarTs(ts) {
+  if (typeof ts === 'string' && isNaN(ts)) { const t = Date.parse(ts); return isNaN(t) ? null : t; }
+  const n = Number(ts);
+  if (!isFinite(n) || n <= 0) return null;
+  return n < 1e12 ? n * 1000 : n;
+}
+
+// Normativa: límite según la franja horaria del campus.
+const esDiurno = ts => { const h = horaDecimal(ts); return h >= CONFIG.umbrales.inicioDiurno && h < CONFIG.umbrales.finDiurno; };
+const umbral = ts => esDiurno(ts) ? CONFIG.umbrales.diurno : CONFIG.umbrales.nocturno;
+
+// Clasificación de color del sensor.
+function clasificar(db) {
+  if (db > CONFIG.niveles.rojo) return { color: CONFIG.colores.rojo, texto: 'NIVEL ALTO' };
+  if (db >= CONFIG.niveles.verde) return { color: CONFIG.colores.amarillo, texto: 'NIVEL MODERADO' };
+  return { color: CONFIG.colores.verde, texto: 'NIVEL BAJO' };
+}
+const nombreZona = id => CONFIG.zonas[id] || id.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase());
+
+// Interpolación de color sobre la rampa secuencial del patrón semanal.
+function colorRampa(db) {
+  const r = CONFIG.rampaSemana;
+  if (db <= r[0][0]) return r[0][1];
+  for (let i = 1; i < r.length; i++) {
+    if (db <= r[i][0]) {
+      const f = (db - r[i - 1][0]) / (r[i][0] - r[i - 1][0]);
+      const a = parseInt(r[i - 1][1].slice(1), 16), b = parseInt(r[i][1].slice(1), 16);
+      const c = s => Math.round(((a >> s) & 255) + f * (((b >> s) & 255) - ((a >> s) & 255)));
+      return `rgb(${c(16)},${c(8)},${c(0)})`;
+    }
+  }
+  return r[r.length - 1][1];
+}
+
+/* ==================================================================
+   ESTADO
+   ================================================================== */
+const estado = {
+  modo: 'conectando',        // 'conectando' | 'vivo' | 'demo'
+  brokerOk: false,
+  zonas: new Map(),          // id -> objeto de zona
+  zonaSel: null,
+  eventos: [],               // superaciones > 5 min, la más reciente primero
+};
+let mapaReal, mapaDigital, mapasListos = false, grafica, temporizadorDemo = null, relojDemo = null;
+
+function crearZona(id, lat, lon) {
+  const z = {
+    id, lat, lon,
+    leq: null, lmax: null, ts: 0,        // última lectura en vivo
+    ultimoRx: 0,                          // instante local de recepción
+    seq: null, recibidos: 0, perdidos: 0, recuperados: 0,
+    faltantes: new Set(),                 // secuencias que aún no llegan (posibles pendientes en SD)
+    sdPend: null,                         // si el nodo informa "sd_pend", tiene prioridad
+    ventana: [],                          // lecturas del último minuto
+    serie15: [],                          // agregados de 15 min de los últimos 7 días
+    sobreDesde: null, maxSobre: 0, eventoActivo: null,
+    historico: 'pendiente',               // 'pendiente' | 'ok' | 'error'
+    marcadores: null,                     // un marcador por mapa (real y digital)
+  };
+  estado.zonas.set(id, z);
+  pintarZonas();
+  return z;
+}
+
+function limpiarZonas() {
+  for (const z of estado.zonas.values()) quitarMarcador(z);
+  estado.zonas.clear();
+  estado.zonaSel = null;
+  estado.eventos = [];
+  actualizarCalor();
+  pintarZonas();
+  pintarTodo();
+}
+
+/* ==================================================================
+   PROCESAMIENTO DE LECTURAS (misma ruta para MQTT y para la demo)
+   ================================================================== */
+function procesarLectura(m, zonaDelTopico) {
+  if (!m || typeof m !== 'object') return;
+  const id = String(m.zona || zonaDelTopico || '').trim();
+  const leq = Number(m.leq);
+  if (!id || !isFinite(leq)) return;
+  const lmax = isFinite(Number(m.lmax)) ? Number(m.lmax) : leq;
+  const ts = normalizarTs(m.ts) || Date.now();
+
+  let z = estado.zonas.get(id);
+  const nueva = !z;
+  if (nueva) z = crearZona(id, null, null);
+  if (isFinite(Number(m.lat)) && isFinite(Number(m.lon))) { z.lat = Number(m.lat); z.lon = Number(m.lon); }
+  if (nueva && estado.modo === 'vivo') cargarHistorico(z);
+
+  const tipo = contabilizarSecuencia(z, Number(m.seq));
+  if (m.sd_pend != null && isFinite(Number(m.sd_pend))) z.sdPend = Number(m.sd_pend);
+  z.recibidos++;
+  z.ultimoRx = Date.now();
+  if (tipo !== 'duplicada') acumularEnSerie(z, ts, leq, lmax);
+
+  // Lecturas recuperadas del respaldo en SD (llegan tarde): solo alimentan el histórico.
+  if (tipo !== 'ok' || ts < z.ts) return;
+
+  z.leq = leq; z.lmax = lmax; z.ts = ts;
+  z.ventana.push({ ts, leq, lmax });
+  while (z.ventana.length && z.ventana[0].ts < ts - MIN) z.ventana.shift();
+
+  evaluarEvento(z);
+  actualizarMarcador(z);
+  programarCalor();
+  if (!estado.zonaSel) seleccionarZona(id);
+  else if (id === estado.zonaSel) pintarVivo();
+}
+
+// Control de secuencia: detecta huecos, recuperaciones tardías y reinicios del nodo.
+function contabilizarSecuencia(z, seq) {
+  if (!Number.isFinite(seq)) return 'ok';
+  if (z.seq === null || seq === z.seq + 1) { z.seq = seq; return 'ok'; }
+  if (seq > z.seq + 1) {
+    const hueco = seq - z.seq - 1;
+    if (hueco <= CONFIG.nodo.huecoMaximo) {
+      z.perdidos += hueco;
+      for (let s = z.seq + 1; s < seq && z.faltantes.size < CONFIG.nodo.huecoMaximo; s++) z.faltantes.add(s);
+    }
+    z.seq = seq;
+    return 'ok';
+  }
+  // seq <= última: ¿dato recuperado de la SD, reinicio del nodo o duplicado?
+  if (z.faltantes.delete(seq)) { z.recuperados++; return 'tardia'; }
+  if (z.seq - seq > CONFIG.nodo.huecoMaximo || seq < 3) { z.seq = seq; z.faltantes.clear(); return 'ok'; }
+  return 'duplicada';
+}
+
+// Acumula la lectura en su cubeta de 15 minutos (promedio energético).
+function acumularEnSerie(z, ts, leq, lmax) {
+  const inicio = Math.floor(ts / CUBETA) * CUBETA;
+  const s = z.serie15;
+  let p = null;
+  for (let i = s.length - 1; i >= 0 && i >= s.length - 200; i--) {
+    if (s[i].ts === inicio) { p = s[i]; break; }
+    if (s[i].ts < inicio) break;
+  }
+  if (!p) {
+    if (s.length && inicio < s[s.length - 1].ts) return;      // cubeta antigua inexistente: se omite
+    p = { ts: inicio, leq, lmax, _e: 0, _n: 0 };
+    s.push(p);
+    while (s.length && s[0].ts < Date.now() - 7 * DIA - CUBETA) s.shift();
+  }
+  if (!p._n) { p._n = 1; p._e = aEnergia(p.leq); if (p === s[s.length - 1] && p._e === aEnergia(leq)) { p._n = 0; p._e = 0; } }
+  p._e += aEnergia(leq); p._n++;
+  p.leq = aDb(p._e / p._n);
+  p.lmax = Math.max(p.lmax, lmax);
+}
+
+// Leq y Lmax del último minuto.
+function resumenMinuto(z) {
+  if (!z.ventana.length) return { leq: z.leq, lmax: z.lmax };
+  let e = 0, mx = -Infinity;
+  for (const v of z.ventana) { e += aEnergia(v.leq); if (v.lmax > mx) mx = v.lmax; }
+  return { leq: aDb(e / z.ventana.length), lmax: mx };
+}
+
+// Evento = Leq de 1 minuto por encima del límite vigente durante más de 5 minutos seguidos.
+// (Se usa el Leq de 1 min y no el instantáneo para que una lectura suelta no corte el evento.)
+function evaluarEvento(z) {
+  const leq1m = resumenMinuto(z).leq;
+  const lim = umbral(z.ts);
+  if (leq1m > lim) {
+    if (z.sobreDesde === null) { z.sobreDesde = z.ts; z.maxSobre = leq1m; }
+    z.maxSobre = Math.max(z.maxSobre, leq1m);
+    if (z.eventoActivo) { z.eventoActivo.max = z.maxSobre; }
+    else if (z.ts - z.sobreDesde >= CONFIG.eventos.duracionMinMs) {
+      z.eventoActivo = { zona: z.id, inicio: z.sobreDesde, fin: null, max: z.maxSobre, umbral: lim };
+      registrarEvento(z.eventoActivo);
+    }
+  } else {
+    if (z.eventoActivo) { z.eventoActivo.fin = z.ts; z.eventoActivo = null; pintarEventos(); }
+    z.sobreDesde = null;
+  }
+}
+
+function registrarEvento(ev) {
+  if (estado.eventos.some(e => e.zona === ev.zona && e.inicio === ev.inicio)) return;
+  estado.eventos.push(ev);
+  estado.eventos.sort((a, b) => b.inicio - a.inicio);
+  estado.eventos.length = Math.min(estado.eventos.length, CONFIG.eventos.maximo);
+  pintarEventos();
+}
+
+// Reconstruye los eventos de las últimas 24 h a partir de los agregados de 1 minuto.
+function eventosDesdeHistorico(z, agg1m) {
+  let ini = null, ult = null, mx = 0;
+  const cerrar = () => {
+    if (ini !== null && ult - ini >= CONFIG.eventos.duracionMinMs) {
+      const enCurso = Date.now() - ult < 3 * MIN;
+      const ev = { zona: z.id, inicio: ini, fin: enCurso ? null : ult + MIN, max: mx, umbral: umbral(ini) };
+      if (enCurso && !z.eventoActivo) { z.eventoActivo = ev; z.sobreDesde = ini; z.maxSobre = mx; }
+      registrarEvento(ev);
+    }
+    ini = null;
+  };
+  for (const p of agg1m) {
+    const sobre = p.leq > umbral(p.ts);
+    if (ini !== null && (!sobre || p.ts - ult > 2 * MIN)) cerrar();
+    if (sobre) { if (ini === null) { ini = p.ts; mx = p.leq; } ult = p.ts; mx = Math.max(mx, p.leq); }
+  }
+  cerrar();
+}
+
+/* ==================================================================
+   HISTÓRICO POR HTTP
+   ================================================================== */
+const limpiarSerie = arr => (Array.isArray(arr) ? arr : [])
+  .map(p => ({ ts: normalizarTs(p.ts), leq: Number(p.leq), lmax: Number(p.lmax) }))
+  .filter(p => p.ts && isFinite(p.leq))
+  .map(p => (isFinite(p.lmax) ? p : { ...p, lmax: p.leq }))
+  .sort((a, b) => a.ts - b.ts);
+
+async function pedirHistorico(zona, desde, hasta, res) {
+  const u = new URL(CONFIG.api.historico, location.href);
+  u.searchParams.set('zona', zona);
+  u.searchParams.set('desde', new Date(desde).toISOString());
+  u.searchParams.set('hasta', new Date(hasta).toISOString());
+  u.searchParams.set('res', res);
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), CONFIG.api.timeoutMs);
+  try {
+    const r = await fetch(u, { signal: ctl.signal, headers: { Accept: 'application/json' } });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return await r.json();
+  } finally { clearTimeout(t); }
+}
+
+async function cargarHistorico(z) {
+  const ahora = Date.now();
+  try {
+    // 7 días a 15 min (gráfica y patrón semanal) + 24 h a 1 min (registro de eventos)
+    const [semana, dia] = await Promise.all([
+      pedirHistorico(z.id, ahora - 7 * DIA, ahora, '15m'),
+      pedirHistorico(z.id, ahora - DIA, ahora, '1m'),
+    ]);
+    if (estado.modo !== 'vivo' || estado.zonas.get(z.id) !== z) return;
+    // Se conservan las cubetas ya acumuladas en vivo y se rellena hacia atrás con el histórico.
+    const vivas = z.serie15.filter(p => p._n);
+    const tsVivas = new Set(vivas.map(p => p.ts));
+    z.serie15 = limpiarSerie(semana.agg15m).filter(p => !tsVivas.has(p.ts)).concat(vivas).sort((a, b) => a.ts - b.ts);
+    eventosDesdeHistorico(z, limpiarSerie(dia.agg1m));
+    z.historico = 'ok';
+  } catch (e) {
+    if (estado.zonas.get(z.id) === z) z.historico = 'error';
+  }
+  if (z.id === estado.zonaSel) { pintarGrafica(); pintarSemana(); }
+}
+
+/* ==================================================================
+   MQTT
+   ================================================================== */
+function conectarMqtt() {
+  if (typeof mqtt === 'undefined') { iniciarDemo(); return; }    // no cargó la librería
+  programarDemo();
+  let cliente;
+  try {
+    cliente = mqtt.connect(CONFIG.mqtt.url, {
+      clientId: 'gemelo-' + Math.random().toString(16).slice(2, 10),
+      reconnectPeriod: CONFIG.mqtt.reconexionMs,
+      connectTimeout: 5000,
+      clean: true,
+    });
+  } catch (e) { iniciarDemo(); return; }
+
+  const decodificador = new TextDecoder();
+  cliente.on('connect', () => {
+    clearTimeout(temporizadorDemo); temporizadorDemo = null;
+    if (estado.modo === 'demo') detenerDemo();
+    estado.modo = 'vivo'; estado.brokerOk = true;
+    cliente.subscribe(CONFIG.mqtt.topico);
+    pintarModo();
+  });
+  cliente.on('message', (topico, carga) => {
+    if (estado.modo !== 'vivo') return;
+    try { procesarLectura(JSON.parse(decodificador.decode(carga)), topico.split('/').pop()); }
+    catch (e) { /* mensaje mal formado: se ignora */ }
+  });
+  cliente.on('close', () => { estado.brokerOk = false; programarDemo(); pintarModo(); });
+  cliente.on('error', () => { /* el cliente reintenta solo */ });
+}
+
+// Si el broker no responde en CONFIG.mqtt.esperaDemoMs, se pasa a datos simulados.
+function programarDemo() {
+  if (temporizadorDemo || estado.modo === 'demo') return;
+  temporizadorDemo = setTimeout(() => { temporizadorDemo = null; iniciarDemo(); }, CONFIG.mqtt.esperaDemoMs);
+}
+
+/* ==================================================================
+   MODO DE DEMOSTRACIÓN (datos simulados)
+   ================================================================== */
+// Perfil diario: bajo de noche, actividad de día, pico de almuerzo y picos en los descansos.
+function nivelDemo(p, ts) {
+  const h = horaDecimal(ts), dia = enCampus(ts).getUTCDay();
+  const g = (c, s) => Math.exp(-((h - c) ** 2) / (2 * s * s));
+  const jornada = 1 / (1 + Math.exp(-(h - 6.5) * 2.2)) / (1 + Math.exp((h - 20.5) * 1.6));
+  const finDeSemana = dia === 0 ? 0.25 : dia === 6 ? 0.55 : 1;
+  const descansos = g(7.9, .2) + g(9.9, .25) + g(15.9, .25) + g(17.9, .3);
+  return p.base + finDeSemana * (p.actividad * jornada + p.almuerzo * g(12.7, .75) + p.descansos * descansos);
+}
+// Ruido seudoaleatorio determinista en [-1, 1] (el histórico simulado no cambia al repintar).
+function ruido(ts, semilla) { const x = Math.sin(ts / 60000 * 12.9898 + semilla * 78.233) * 43758.5453; return (x - Math.floor(x)) * 2 - 1; }
+
+function iniciarDemo() {
+  if (estado.modo === 'demo') return;
+  limpiarZonas();
+  estado.modo = 'demo';
+  pintarModo();
+  const ahora = Date.now();
+  CONFIG.demo.zonas.forEach((p, i) => {
+    const z = crearZona(p.id, p.lat, p.lon);
+    z.perfil = p; z.semilla = i + 1; z.seq = 1000 + i * 37; z.historico = 'ok';
+    // 7 días de agregados de 15 min
+    for (let t = Math.floor((ahora - 7 * DIA) / CUBETA) * CUBETA; t < ahora - CUBETA; t += CUBETA) {
+      const leq = nivelDemo(p, t + CUBETA / 2) + ruido(t, z.semilla) * 1.5;
+      z.serie15.push({ ts: t, leq, lmax: leq + 9 + ruido(t, z.semilla + 9) * 4 });
+    }
+    // 24 h de agregados de 1 min para reconstruir el registro de eventos
+    const minutos = [];
+    for (let t = Math.floor((ahora - DIA) / MIN) * MIN; t < ahora; t += MIN) minutos.push({ ts: t, leq: nivelDemo(p, t) + ruido(t, z.semilla + 3) * 2 });
+    eventosDesdeHistorico(z, minutos);
+  });
+  const latido = () => {
+    const t = Date.now();
+    for (const z of estado.zonas.values()) {
+      const leq = nivelDemo(z.perfil, t) + (Math.random() * 2 - 1) * 2.5;
+      procesarLectura({ zona: z.id, lat: z.lat, lon: z.lon, leq: +leq.toFixed(1), lmax: +(leq + 3 + Math.random() * 8).toFixed(1), seq: z.seq + 1, ts: t });
+    }
+  };
+  latido();
+  relojDemo = setInterval(latido, CONFIG.demo.periodoMs);
+  pintarTodo();
+}
+
+function detenerDemo() {
+  clearInterval(relojDemo); relojDemo = null;
+  estado.modo = 'conectando';
+  limpiarZonas();
+}
+
+/* ==================================================================
+   MAPA 3D: dos mapas MapLibre sincronizados
+   - "real" (debajo): imagen satelital tal cual.
+   - "digital" (encima, recortado por el deslizador): misma imagen
+     oscurecida y teñida, con los edificios levantados en volumen.
+   ================================================================== */
+const mapas = () => [mapaReal, mapaDigital];
+const coleccion = (features = []) => ({ type: 'FeatureCollection', features });
+
+function estiloMapa(digital) {
+  const c = CONFIG.mapa, col = CONFIG.colores, ed = CONFIG.edificios;
+  const altura = ['coalesce', ['get', 'altura'], ed.alturaPorDefecto];
+  const estilo = {
+    version: 8,
+    sources: {
+      sat: { type: 'raster', tiles: [c.teselas], tileSize: 256, maxzoom: c.zoomNativoMax, attribution: c.atribucion },
+      sensores: { type: 'geojson', data: coleccion() },
+      trazo: { type: 'geojson', data: coleccion() },
+    },
+    layers: [
+      { id: 'fondo', type: 'background', paint: { 'background-color': col.fondo } },
+      { id: 'sat', type: 'raster', source: 'sat',
+        paint: digital ? { 'raster-saturation': -0.9, 'raster-brightness-max': 0.6, 'raster-contrast': 0.35 } : {} },
+    ],
+  };
+  if (digital) {
+    estilo.sources.edificios = { type: 'geojson', data: EDIFICIOS };
+    estilo.layers.push(
+      // velo azul sobre la imagen en gris: da el tono "holográfico"
+      { id: 'tinte', type: 'background', paint: { 'background-color': c.tinteDigital, 'background-opacity': 0.5 } },
+      // huella con resplandor en el suelo
+      { id: 'edif-halo', type: 'line', source: 'edificios', paint: { 'line-color': col.cian, 'line-width': 7, 'line-blur': 6, 'line-opacity': 0.6 } },
+      // cuerpo translúcido del edificio
+      { id: 'edif-cuerpo', type: 'fill-extrusion', source: 'edificios',
+        paint: { 'fill-extrusion-color': col.azul, 'fill-extrusion-height': altura, 'fill-extrusion-opacity': ed.opacidad, 'fill-extrusion-vertical-gradient': true } },
+      // franja brillante en la cubierta
+      { id: 'edif-techo', type: 'fill-extrusion', source: 'edificios',
+        paint: { 'fill-extrusion-color': col.cian, 'fill-extrusion-base': ['-', altura, 0.5], 'fill-extrusion-height': altura, 'fill-extrusion-opacity': 0.55 } },
+      { id: 'edif-linea', type: 'line', source: 'edificios', paint: { 'line-color': col.cian, 'line-width': 1.5 } },
+    );
+  }
+  estilo.layers.push(
+    // mapa de calor espacial (oculto hasta tener 3 o más sensores)
+    { id: 'calor', type: 'heatmap', source: 'sensores', layout: { visibility: 'none' },
+      paint: {
+        'heatmap-weight': ['get', 'w'], 'heatmap-radius': CONFIG.calor.radio, 'heatmap-opacity': 0.6,
+        'heatmap-color': ['interpolate', ['linear'], ['heatmap-density'],
+          0, 'rgba(32,227,162,0)', 0.3, col.verde, 0.6, col.amarillo, 0.9, col.rojo],
+      } },
+    // vista previa de la herramienta "Trazar edificio"
+    { id: 'trazo-linea', type: 'line', source: 'trazo', paint: { 'line-color': '#ffffff', 'line-width': 1.5, 'line-dasharray': [3, 3] } },
+    { id: 'trazo-puntos', type: 'circle', source: 'trazo', paint: { 'circle-radius': 3.5, 'circle-color': '#ffffff' } },
+  );
+  return estilo;
+}
+
+function iniciarMapa() {
+  const c = CONFIG.mapa;
+  const comunes = {
+    center: [c.centro[1], c.centro[0]], zoom: c.zoom, minZoom: c.zoomMin, maxZoom: c.zoomMax,
+    pitch: c.inclinacion, bearing: c.rumbo, maxPitch: c.inclinacionMax, attributionControl: false,
+  };
+  mapaReal = new maplibregl.Map({ container: 'mapa-real', style: estiloMapa(false), ...comunes });
+  mapaDigital = new maplibregl.Map({ container: 'mapa-digital', style: estiloMapa(true), ...comunes });
+  // Los controles van en el mapa digital (su esquina derecha siempre queda visible).
+  mapaDigital.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
+  mapaDigital.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right');
+
+  // Sincronización de cámara en ambos sentidos.
+  let sincronizando = false;
+  const enlazar = (a, b) => a.on('move', () => {
+    if (sincronizando) return;
+    sincronizando = true;
+    b.jumpTo({ center: a.getCenter(), zoom: a.getZoom(), bearing: a.getBearing(), pitch: a.getPitch() });
+    sincronizando = false;
+  });
+  enlazar(mapaReal, mapaDigital);
+  enlazar(mapaDigital, mapaReal);
+
+  let cargados = 0;
+  for (const m of mapas()) {
+    m.on('load', () => { if (++cargados === 2) { mapasListos = true; actualizarCalor(); } });
+    m.on('mousemove', e => { $('coords').textContent = `lat ${e.lngLat.lat.toFixed(5)}, lon ${e.lngLat.lng.toFixed(5)}`; });
+  }
+  rotularEdificios();
+  iniciarDeslizador();
+  iniciarTrazado();
+  iniciarVista();
+}
+
+// Rótulos de los edificios (solo en el lado digital), en el centro de cada polígono.
+let rotulos = [];
+function rotularEdificios() {
+  rotulos.forEach(r => r.remove());
+  rotulos = [];
+  for (const f of EDIFICIOS.features) {
+    if (!f.properties || !f.properties.nombre || f.geometry.type !== 'Polygon') continue;
+    const anillo = f.geometry.coordinates[0].slice(0, -1);
+    const centro = anillo.reduce((s, p) => [s[0] + p[0] / anillo.length, s[1] + p[1] / anillo.length], [0, 0]);
+    const el = document.createElement('div');
+    el.className = 'rotulo-edificio';
+    el.textContent = f.properties.nombre;
+    rotulos.push(new maplibregl.Marker({ element: el }).setLngLat(centro).addTo(mapaDigital));
+  }
+}
+
+// Deslizador: mueve el recorte (clip-path) del mapa digital.
+let corte = CONFIG.mapa.corteInicial;
+function iniciarDeslizador() {
+  const marco = $('marco'), asa = $('asa');
+  const fijar = f => {
+    corte = limitar(f, 0.03, 0.9);
+    marco.style.setProperty('--corte', (corte * 100).toFixed(2) + '%');
+    asa.setAttribute('aria-valuenow', Math.round(corte * 100));
+  };
+  const desdePuntero = e => { const r = marco.getBoundingClientRect(); fijar((e.clientX - r.left) / r.width); };
+  asa.addEventListener('pointerdown', e => { asa.setPointerCapture(e.pointerId); e.preventDefault(); });
+  asa.addEventListener('pointermove', e => { if (asa.hasPointerCapture(e.pointerId)) desdePuntero(e); });
+  asa.addEventListener('keydown', e => {
+    if (e.key === 'ArrowLeft') fijar(corte - 0.03);
+    else if (e.key === 'ArrowRight') fijar(corte + 0.03);
+  });
+  fijar(corte);
+}
+
+// Botón para alternar entre vista cenital (2D) e inclinada (3D).
+function iniciarVista() {
+  const boton = $('btn-vista'), c = CONFIG.mapa;
+  const rotular = () => { boton.textContent = mapaReal.getPitch() > 5 ? '▦ Vista 2D' : '◈ Vista 3D'; };
+  boton.addEventListener('click', () => {
+    const en3d = mapaReal.getPitch() > 5;
+    mapaReal.easeTo({ pitch: en3d ? 0 : c.inclinacion, bearing: en3d ? 0 : c.rumbo, duration: SIN_MOVIMIENTO ? 0 : 900 });
+  });
+  mapaReal.on('pitchend', rotular);
+  mapaReal.on('moveend', rotular);
+  rotular();
+}
+
+// Ayuda de edición: trazar un edificio a clics y copiar su GeoJSON a EDIFICIOS.
+// (Conviene trazar en "Vista 2D" para ubicar bien las esquinas.)
+function iniciarTrazado() {
+  const boton = $('btn-trazar'), salida = $('salida-trazo');
+  let puntos = null;
+  const pintar = () => {
+    const fs = [];
+    if (puntos && puntos.length) fs.push({ type: 'Feature', properties: {}, geometry: { type: 'MultiPoint', coordinates: puntos } });
+    if (puntos && puntos.length > 1) fs.push({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: puntos } });
+    for (const m of mapas()) { const s = m.getSource('trazo'); if (s) s.setData(coleccion(fs)); }
+  };
+  for (const m of mapas()) m.on('click', e => {
+    if (!puntos) return;
+    puntos.push([+e.lngLat.lng.toFixed(6), +e.lngLat.lat.toFixed(6)]);
+    pintar();
+  });
+  boton.addEventListener('click', () => {
+    if (!puntos) {
+      puntos = [];
+      boton.textContent = '✓ Cerrar polígono';
+      salida.hidden = true;
+      $('marco').classList.add('trazando');
+      return;
+    }
+    const hechos = puntos;
+    puntos = null;
+    pintar();
+    boton.textContent = '✎ Trazar edificio';
+    $('marco').classList.remove('trazando');
+    if (hechos.length < 3) return;
+    const f = {
+      type: 'Feature',
+      properties: { nombre: 'Nuevo edificio', altura: CONFIG.edificios.alturaPorDefecto },   // altura en metros
+      geometry: { type: 'Polygon', coordinates: [[...hechos, hechos[0]]] },
+    };
+    EDIFICIOS.features.push(f);                       // vista previa en el lado digital
+    const s = mapaDigital.getSource('edificios');
+    if (s) s.setData(EDIFICIOS);
+    rotularEdificios();
+    salida.value = JSON.stringify(f) + ',';
+    salida.hidden = false;
+    salida.focus(); salida.select();                  // listo para copiar y pegar en EDIFICIOS.features
+  });
+}
+
+// Marcador holográfico: uno por mapa (el recorte del lado digital también oculta sus marcadores).
+function actualizarMarcador(z) {
+  if (z.lat === null || z.lon === null) return;
+  if (!z.marcadores) {
+    z.marcadores = mapas().map(m => {
+      const el = document.createElement('div');
+      el.title = nombreZona(z.id);
+      el.innerHTML = '<div class="sensor"><span class="anillo"></span><span class="anillo a2"></span><span class="haz"></span><span class="nucleo"></span><span class="etiqueta"></span></div>';
+      el.addEventListener('click', e => { e.stopPropagation(); seleccionarZona(z.id); });
+      return new maplibregl.Marker({ element: el }).setLngLat([z.lon, z.lat]).addTo(m);
+    });
+  } else {
+    const p = z.marcadores[0].getLngLat();
+    if (p.lat !== z.lat || p.lng !== z.lon) z.marcadores.forEach(m => m.setLngLat([z.lon, z.lat]));
+  }
+  const k = CONFIG.pulso;
+  const f = limitar((z.leq - k.dbLento) / (k.dbRapido - k.dbLento), 0, 1);
+  const t = (Math.round((k.sLento + f * (k.sRapido - k.sLento)) * 5) / 5).toFixed(1) + 's';   // pasos de 0,2 s
+  const color = clasificar(z.leq).color;
+  for (const m of z.marcadores) {
+    const el = m.getElement().firstElementChild;
+    if (el.dataset.t !== t) { el.dataset.t = t; el.style.setProperty('--t', t); }
+    el.style.setProperty('--c', color);
+    el.classList.toggle('sel', z.id === estado.zonaSel);
+    el.lastElementChild.textContent = `${nombreZona(z.id)} · ${z.leq.toFixed(1)} dB`;
+  }
+}
+function quitarMarcador(z) {
+  if (z.marcadores) { z.marcadores.forEach(m => m.remove()); z.marcadores = null; }
+}
+
+// Mapa de calor espacial: solo con 3 o más sensores con datos.
+let calorPendiente = null;
+function programarCalor() { if (!calorPendiente) calorPendiente = setTimeout(() => { calorPendiente = null; actualizarCalor(); }, 400); }
+function actualizarCalor() {
+  if (!mapasListos) return;
+  const k = CONFIG.calor;
+  const puntos = [];
+  for (const z of estado.zonas.values()) {
+    if (z.leq === null || z.lat === null) continue;
+    puntos.push({ type: 'Feature', properties: { w: limitar((z.leq - k.min) / (k.max - k.min), 0.05, 1) }, geometry: { type: 'Point', coordinates: [z.lon, z.lat] } });
+  }
+  const activo = puntos.length >= k.minimoSensores;
+  for (const m of mapas()) {
+    m.getSource('sensores').setData(coleccion(activo ? puntos : []));
+    m.setLayoutProperty('calor', 'visibility', activo ? 'visible' : 'none');
+  }
+}
+
+/* ==================================================================
+   PANELES
+   ================================================================== */
+function seleccionarZona(id) {
+  estado.zonaSel = id;
+  for (const z of estado.zonas.values()) if (z.marcadores && z.leq !== null) actualizarMarcador(z);
+  pintarZonas();
+  pintarTodo();
+}
+const zonaActual = () => estado.zonas.get(estado.zonaSel) || null;
+
+function pintarTodo() { pintarVivo(); pintarSistema(); pintarGrafica(); pintarSemana(); pintarEventos(); }
+
+function pintarZonas() {
+  const nav = $('zonas');
+  nav.textContent = '';
+  for (const z of estado.zonas.values()) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = nombreZona(z.id);
+    b.setAttribute('aria-pressed', String(z.id === estado.zonaSel));
+    b.addEventListener('click', () => { seleccionarZona(z.id); if (z.lat !== null && mapaReal) mapaReal.easeTo({ center: [z.lon, z.lat], duration: SIN_MOVIMIENTO ? 0 : 700 }); });
+    nav.appendChild(b);
+  }
+}
+
+function pintarModo() {
+  const ins = $('insignia');
+  const texto = { demo: 'DATOS SIMULADOS', vivo: estado.brokerOk ? 'EN VIVO' : 'RECONECTANDO…', conectando: 'CONECTANDO…' }[estado.modo];
+  ins.textContent = texto;
+  ins.dataset.modo = estado.modo === 'vivo' && !estado.brokerOk ? 'conectando' : estado.modo;
+  $('aviso-demo').hidden = estado.modo !== 'demo';
+  pintarSistema();
+}
+
+// --- 01 Nivel en vivo ---
+function iniciarMedidor() {
+  // Marcas de los dos umbrales sobre el arco de 270°.
+  const { min, max } = CONFIG.medidor;
+  const ns = 'http://www.w3.org/2000/svg';
+  for (const v of [CONFIG.niveles.verde, CONFIG.niveles.rojo]) {
+    const a = (135 + (v - min) / (max - min) * 270) * Math.PI / 180;
+    const linea = document.createElementNS(ns, 'line');
+    linea.setAttribute('class', 'marca-umbral');
+    linea.setAttribute('x1', 100 + Math.cos(a) * 77); linea.setAttribute('y1', 100 + Math.sin(a) * 77);
+    linea.setAttribute('x2', 100 + Math.cos(a) * 91); linea.setAttribute('y2', 100 + Math.sin(a) * 91);
+    const txt = document.createElementNS(ns, 'text');
+    txt.setAttribute('class', 'texto-umbral');
+    txt.setAttribute('x', 100 + Math.cos(a) * 67); txt.setAttribute('y', 100 + Math.sin(a) * 67 + 3);
+    txt.textContent = v;
+    $('marcas').append(linea, txt);
+  }
+}
+
+function pintarVivo() {
+  const z = zonaActual();
+  $('vivo-zona').textContent = z ? nombreZona(z.id) : '—';
+  const ahora = z && z.ts ? z.ts : Date.now();
+  $('limite').textContent = umbral(ahora);
+  $('periodo').textContent = 'dB(A) · ' + (esDiurno(ahora) ? 'diurno' : 'nocturno');
+  const panel = $('p-vivo');
+  if (!z || z.leq === null) {
+    $('leq').textContent = '--.-'; $('lmax').textContent = '--.-'; $('ultima').textContent = '--:--:--';
+    $('veredicto').textContent = 'SIN DATOS';
+    $('arco').style.strokeDasharray = '0 527.8';
+    panel.style.removeProperty('--nivel');
+    return;
+  }
+  const { min, max } = CONFIG.medidor;
+  const f = limitar((z.leq - min) / (max - min), 0, 1);
+  const c = clasificar(z.leq);
+  $('arco').style.strokeDasharray = `${(f * 395.8).toFixed(1)} 527.8`;
+  panel.style.setProperty('--nivel', c.color);
+  $('leq').textContent = z.leq.toFixed(1);
+  $('veredicto').textContent = c.texto;
+  $('lmax').textContent = resumenMinuto(z).lmax.toFixed(1);
+  $('ultima').textContent = fmtHMS(z.ts);
+}
+
+// --- 02 Gráfica de 24 h ---
+function iniciarGrafica() {
+  if (typeof Chart === 'undefined') return;
+  const col = CONFIG.colores;
+  Chart.defaults.font.family = '"JetBrains Mono", monospace';
+  Chart.defaults.font.size = 10;
+  Chart.defaults.color = col.tenue;
+  const ctx = $('grafica').getContext('2d');
+  const relleno = ctx.createLinearGradient(0, 0, 0, 230);
+  relleno.addColorStop(0, 'rgba(0,229,255,.28)');
+  relleno.addColorStop(1, 'rgba(0,229,255,0)');
+  grafica = new Chart(ctx, {
+    type: 'line',
+    data: {
+      datasets: [
+        {
+          label: 'Leq 15 min', data: [], parsing: false, borderColor: col.cian, borderWidth: 2,
+          pointRadius: 0, pointHoverRadius: 4, pointHoverBackgroundColor: '#fff', tension: 0.3,
+          fill: true, backgroundColor: relleno,
+          // el tramo se pinta en rojo cuando supera el límite de su franja
+          segment: { borderColor: c => (c.p1.parsed.y > umbral(c.p1.parsed.x) ? col.rojo : undefined) },
+        },
+        {
+          label: 'Límite Res. 627 (65 día / 55 noche)', data: [], parsing: false, stepped: true,
+          borderColor: '#ffffff', borderWidth: 1, borderDash: [5, 4], pointRadius: 0, pointHoverRadius: 0, fill: false,
+        },
+      ],
+    },
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'nearest', axis: 'x', intersect: false },
+      scales: {
+        x: {
+          type: 'linear',
+          grid: { color: 'rgba(30,144,255,.12)' }, border: { color: 'rgba(30,144,255,.35)' },
+          ticks: { callback: v => fmtHM(v), maxRotation: 0 },
+          // marcas cada 3 horas, alineadas con la hora del campus
+          afterBuildTicks: eje => {
+            const paso = 3 * HORA, des = CONFIG.utcOffsetHoras * HORA, marcas = [];
+            for (let t = Math.ceil((eje.min + des) / paso) * paso - des; t <= eje.max; t += paso) marcas.push({ value: t });
+            eje.ticks = marcas;
+          },
+        },
+        y: {
+          suggestedMin: 35, suggestedMax: 80,
+          grid: { color: 'rgba(30,144,255,.12)' }, border: { color: 'rgba(30,144,255,.35)' },
+          ticks: { stepSize: 10 },
+        },
+      },
+      plugins: {
+        legend: { labels: { boxWidth: 18, boxHeight: 1, color: col.texto, font: { size: 10 } } },
+        tooltip: {
+          filter: i => i.datasetIndex === 0,
+          backgroundColor: 'rgba(5,10,22,.95)', borderColor: col.cian, borderWidth: 1, displayColors: false,
+          callbacks: {
+            title: it => (it.length ? fmtFecha(it[0].parsed.x) : ''),
+            label: it => {
+              const lim = umbral(it.parsed.x);
+              return [`Leq ${it.parsed.y.toFixed(1)} dB(A)`, `Límite ${lim} dB(A)` + (it.parsed.y > lim ? ' · superado' : '')];
+            },
+          },
+        },
+      },
+    },
+  });
+}
+
+function pintarGrafica() {
+  const z = zonaActual();
+  $('nota-historico').hidden = !(z && z.historico === 'error');
+  if (!grafica) return;
+  const ahora = Date.now(), desde = ahora - DIA;
+  grafica.data.datasets[0].data = z ? z.serie15.filter(p => p.ts >= desde - CUBETA).map(p => ({ x: p.ts + CUBETA / 2, y: +p.leq.toFixed(1) })) : [];
+  // Línea de referencia escalonada: un punto por hora con el límite vigente a partir de esa hora.
+  const limites = [{ x: desde, y: umbral(desde) }];
+  for (let t = Math.ceil(desde / HORA) * HORA; t < ahora; t += HORA) limites.push({ x: t, y: umbral(t) });
+  limites.push({ x: ahora, y: umbral(ahora) });
+  grafica.data.datasets[1].data = limites;
+  grafica.options.scales.x.min = desde;
+  grafica.options.scales.x.max = ahora;
+  grafica.update('none');
+}
+
+// --- 03 Patrón semanal (hora × día) ---
+const celdas = [];
+function iniciarSemana() {
+  const cont = $('semana');
+  cont.appendChild(document.createElement('span'));
+  for (let h = 0; h < 24; h++) {
+    const e = document.createElement('span');
+    e.className = 'hora'; e.textContent = h % 3 === 0 ? h : '';
+    cont.appendChild(e);
+  }
+  for (let d = 0; d < 7; d++) {
+    const e = document.createElement('span');
+    e.className = 'dia'; e.textContent = DIAS[d];
+    cont.appendChild(e);
+    for (let h = 0; h < 24; h++) {
+      const c = document.createElement('span');
+      c.className = 'celda';
+      cont.appendChild(c);
+      celdas.push(c);
+    }
+  }
+  // globo flotante con el valor de la celda
+  const globo = $('globo');
+  cont.addEventListener('mousemove', e => {
+    const c = e.target.closest('.celda');
+    if (!c || !c.dataset.info) { globo.hidden = true; return; }
+    globo.textContent = c.dataset.info;
+    globo.hidden = false;
+    globo.style.left = Math.min(e.clientX + 12, innerWidth - globo.offsetWidth - 6) + 'px';
+    globo.style.top = (e.clientY - 34) + 'px';
+  });
+  cont.addEventListener('mouseleave', () => { globo.hidden = true; });
+  // leyenda de la rampa
+  const r = CONFIG.rampaSemana, a = r[0][0], b = r[r.length - 1][0];
+  $('rampa').style.background = `linear-gradient(90deg, ${r.map(([v, c]) => `${c} ${((v - a) / (b - a) * 100).toFixed(0)}%`).join(', ')})`;
+  $('ley-min').textContent = a;
+  $('ley-max').textContent = b + ' dB(A)';
+}
+
+function pintarSemana() {
+  const z = zonaActual();
+  const e = new Float64Array(168), n = new Uint16Array(168);
+  if (z) {
+    const desde = Date.now() - 7 * DIA;
+    for (const p of z.serie15) {
+      if (p.ts < desde) continue;
+      const d = enCampus(p.ts), i = ((d.getUTCDay() + 6) % 7) * 24 + d.getUTCHours();
+      e[i] += aEnergia(p.leq); n[i]++;
+    }
+  }
+  const u = CONFIG.umbrales;
+  for (let i = 0; i < 168; i++) {
+    const c = celdas[i], h = i % 24, etiqueta = `${DIAS[Math.floor(i / 24)]} ${pad(h)}:00`;
+    if (!n[i]) { c.style.background = ''; c.classList.remove('sobre'); c.dataset.info = `${etiqueta} · sin datos`; continue; }
+    const leq = aDb(e[i] / n[i]);
+    const lim = h >= u.inicioDiurno && h < u.finDiurno ? u.diurno : u.nocturno;
+    c.style.background = colorRampa(leq);
+    c.classList.toggle('sobre', leq > lim);
+    c.dataset.info = `${etiqueta} · ${leq.toFixed(1)} dB(A)` + (leq > lim ? ` · supera ${lim}` : '');
+  }
+}
+
+// --- 04 Estado del sistema ---
+function pintarSistema() {
+  const poner = (id, texto, e) => { const el = $(id); el.textContent = texto; if (e !== undefined) el.dataset.e = e; };
+  if (estado.modo === 'demo') poner('s-broker', 'Sin conexión', 'mal');
+  else if (estado.brokerOk) poner('s-broker', 'Conectado', 'ok');
+  else poner('s-broker', 'Conectando…', 'aviso');
+
+  const z = zonaActual();
+  if (!z) { poner('s-nodo', 'Sin datos', ''); poner('s-seq', '—'); poner('s-perdidos', '—'); poner('s-sd', '—', ''); return; }
+  const silencio = Date.now() - z.ultimoRx;
+  if (estado.modo === 'demo') poner('s-nodo', 'Simulado', 'aviso');
+  else if (silencio < CONFIG.nodo.sinDatosMs) poner('s-nodo', 'En línea', 'ok');
+  else poner('s-nodo', `Sin datos hace ${fmtDuracion(silencio)}`, 'mal');
+  poner('s-seq', z.seq === null ? '—' : '#' + z.seq);
+  // total de huecos detectados y, entre paréntesis, cuántos siguen sin recuperarse
+  poner('s-perdidos', z.perdidos ? `${z.perdidos} (${z.faltantes.size} sin recuperar)` : '0');
+  // Pendientes en SD: lo que informe el nodo ("sd_pend") o, si no, los huecos de secuencia aún sin recuperar.
+  const pend = z.sdPend !== null ? z.sdPend : z.faltantes.size;
+  poner('s-sd', pend > 0 ? `${pend} pendientes` : 'Sin pendientes', pend > 0 ? 'aviso' : 'ok');
+}
+
+// --- 05 Registro de eventos ---
+function pintarEventos() {
+  const ul = $('eventos');
+  ul.textContent = '';
+  if (!estado.eventos.length) {
+    const li = document.createElement('li');
+    li.className = 'vacio';
+    li.textContent = 'Sin superaciones de más de 5 min registradas.';
+    ul.appendChild(li);
+    return;
+  }
+  for (const ev of estado.eventos) {
+    const li = document.createElement('li');
+    const cuando = document.createElement('div');
+    cuando.className = 'cuando';
+    cuando.textContent = `${fmtFecha(ev.inicio)} · ${nombreZona(ev.zona)}`;
+    const que = document.createElement('div');
+    que.className = 'que';
+    const dur = fmtDuracion((ev.fin || Date.now()) - ev.inicio);
+    que.innerHTML = `Sobre <b>${ev.umbral}</b> dB(A) durante <b>${dur}</b> · máx <b>${ev.max.toFixed(1)}</b>`;
+    if (!ev.fin) { li.className = 'activo'; const e = document.createElement('span'); e.className = 'etq'; e.textContent = 'EN CURSO'; cuando.appendChild(e); }
+    li.append(cuando, que);
+    ul.appendChild(li);
+  }
+}
+
+/* ==================================================================
+   FONDO: "lluvia de datos" muy sutil (pocos trazos, pocos fps)
+   ================================================================== */
+function iniciarLluvia() {
+  if (SIN_MOVIMIENTO) return;
+  const lienzo = $('lluvia'), ctx = lienzo.getContext('2d');
+  let gotas = [];
+  const ajustar = () => {
+    lienzo.width = innerWidth; lienzo.height = innerHeight;        // sin escalar por DPR: más liviano
+    gotas = Array.from({ length: Math.min(45, Math.floor(innerWidth / 30)) }, () => ({
+      x: Math.floor(Math.random() * innerWidth / 40) * 40 + 0.5,   // alineadas con la cuadrícula
+      y: Math.random() * innerHeight, v: 0.6 + Math.random() * 1.6, largo: 30 + Math.random() * 70,
+    }));
+  };
+  ajustar();
+  addEventListener('resize', ajustar);
+  setInterval(() => {
+    if (document.hidden) return;
+    ctx.clearRect(0, 0, lienzo.width, lienzo.height);
+    for (const g of gotas) {
+      ctx.fillStyle = 'rgba(30,144,255,.16)'; ctx.fillRect(g.x, g.y - g.largo, 1, g.largo);
+      ctx.fillStyle = 'rgba(0,229,255,.5)';   ctx.fillRect(g.x - 0.5, g.y, 2, 2);
+      g.y += g.v * 3;
+      if (g.y - g.largo > lienzo.height) g.y = -10;
+    }
+  }, 1000 / CONFIG.ui.fpsFondo);
+}
+
+/* ==================================================================
+   ARRANQUE
+   ================================================================== */
+document.addEventListener('DOMContentLoaded', () => {
+  // Los colores de CONFIG pasan a variables CSS.
+  for (const [k, v] of Object.entries(CONFIG.colores)) document.documentElement.style.setProperty('--' + k, v);
+
+  iniciarMedidor();
+  iniciarSemana();
+  iniciarGrafica();
+  if (typeof maplibregl !== 'undefined') iniciarMapa();
+  else $('mapa-real').textContent = 'No se pudo cargar la librería del mapa (¿sin acceso al CDN?).';
+  iniciarLluvia();
+  pintarModo();
+  pintarTodo();
+  conectarMqtt();
+
+  // Reloj y estado cada segundo; gráficas pesadas con menos frecuencia.
+  setInterval(() => {
+    $('reloj').textContent = fmtHMS(Date.now()) + ' COT';
+    pintarSistema();
+  }, 1000);
+  setInterval(() => {
+    if (document.hidden) return;
+    pintarGrafica(); pintarSemana();
+    if (estado.eventos.some(e => !e.fin)) pintarEventos();          // actualiza la duración de los eventos en curso
+  }, CONFIG.ui.refrescoGraficaMs);
+});
+</script>
+</body>
+</html>
